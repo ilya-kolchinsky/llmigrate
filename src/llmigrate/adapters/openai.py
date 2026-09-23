@@ -12,9 +12,11 @@ from llmigrate.types import Message, Role
 
 _ROLE_MAP = {
     "system": Role.SYSTEM,
+    "developer": Role.SYSTEM,
     "user": Role.USER,
     "assistant": Role.ASSISTANT,
     "tool": Role.TOOL_RESULT,
+    "function": Role.TOOL_RESULT,
 }
 
 _REVERSE_ROLE_MAP = {
@@ -31,7 +33,9 @@ def from_openai(messages: list[dict[str, Any]]) -> list[Message]:
     result: list[Message] = []
     for msg in messages:
         role_str = msg.get("role", "user")
-        role = _ROLE_MAP.get(role_str, Role.USER)
+        if role_str not in _ROLE_MAP:
+            raise ValueError(f"Unknown OpenAI role: {role_str!r}")
+        role = _ROLE_MAP[role_str]
 
         content = msg.get("content", "")
         if content is None:

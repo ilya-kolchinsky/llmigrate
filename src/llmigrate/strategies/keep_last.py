@@ -1,25 +1,28 @@
-"""Keep-last strategy — retain system messages + last N interaction turns."""
+"""Keep-last strategy — retain pinned content + the last N interaction turns."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from llmigrate.types import Message, Role, Strategy, TransferResult
+from llmigrate.pinning import split_pinned
+from llmigrate.turns import group_into_turns
+from llmigrate.types import Message, Strategy, TransferResult
 
 
 def transform(messages: list[Message], **params: Any) -> TransferResult:
     n: int = params.get("n", 5)
+    if n < 0:
+        raise ValueError(f"n must be non-negative, got {n}")
+    pin_first_user: bool = params.get("pin_first_user", True)
 
-    system_msgs = [m for m in messages if m.role == Role.SYSTEM]
-    non_system = [m for m in messages if m.role != Role.SYSTEM]
-
-    # Keep last n messages from the non-system portion
-    # TODO: Align to turn boundaries (never split a user/assistant pair)
-    # TODO: Handle tool call/result integrity (never orphan a tool result)
-    kept = non_system[-n:] if len(non_system) > n else non_system
+    pinned, rest = split_pinned(messages, pin_first_user=pin_first_user)
+    turns = group_into_turns(rest)
+    kept_turns = turns[-n:] if n > 0 else []
+    kept = [msg for turn in kept_turns for msg in turn]
+    dropped_count = sum(len(t) for t in turns) - len(kept)
 
     return TransferResult(
-        messages=system_msgs + kept,
+        messages=pinned + kept,
         strategy=Strategy.KEEP_LAST,
-        metadata={"original_count": len(messages), "n": n},
+        metadata={"original_count": len(messages), "n": n, "dropped_count": dropped_count},
     )

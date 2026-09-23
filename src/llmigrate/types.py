@@ -53,6 +53,8 @@ class Strategy(Enum):
     SUMMARIZE = "summarize"
     CAPSULE = "capsule"
     AUDIT = "audit"
+    SELECTIVE_HISTORY = "selective_history"
+    SUMMARY_TAIL = "summary_tail"
 
 
 @dataclass
@@ -69,11 +71,20 @@ class TransferResult:
 
     @property
     def original_count(self) -> int:
-        return self.metadata.get("original_count", 0)
+        return int(self.metadata.get("original_count", 0))
 
     @property
     def transferred_count(self) -> int:
         return len(self.messages)
 
+    def to_openai(self) -> list[dict[str, Any]]:
+        """Convert the transferred messages to OpenAI-format dicts."""
+        from llmigrate.adapters.openai import to_openai
 
-GenerateCallable = type["Callable[[list[dict[str, Any]]], str]"]
+        return to_openai(self.messages)
+
+    def to_anthropic(self) -> dict[str, Any]:
+        """Convert the transferred messages to Anthropic's {"system", "messages"} shape."""
+        from llmigrate.adapters.anthropic import to_anthropic
+
+        return to_anthropic(self.messages)
