@@ -2,9 +2,17 @@
 
 Cross-model session migration for LLM conversations.
 
-When you switch models mid-conversation — for cost optimization, capability routing, context window management, or failover — the conversation history needs to be transformed to work well with the new model. **llmigrate** provides a single `transfer()` call that handles this transformation using pluggable strategies.
+Model routing is now routine: you start on a big reasoning model and hand off to a cheap one once the hard part is done, you fail over when a provider has an outage, you escalate from a tier-1 to a tier-2 support model, or you pass a research agent's findings to a writing agent. In every one of these cases, the conversation history that made sense for the old model doesn't automatically make sense for the new one — it may blow the new model's context window, bury the task under stale exploration, or omit the structure a receiving agent needs to pick up the work. Naively forwarding the raw transcript is often the wrong move, and hand-rolling the fix for every call site is how context gets silently dropped.
 
-No strategy will ever drop or dilute your system prompt or the first user message (e.g. a task description) — that's enforced at the framework level, not left up to each strategy. See [Protected Content](#protected-content) below.
+**llmigrate** gives you one function, `transfer()`, that takes a conversation and a strategy name and returns a conversation shaped for the next model — truncated, summarized, distilled into a state capsule, or filtered down to the highest-value events, depending on what you need. Whatever strategy you pick, one guarantee never moves: your system prompt and the task the user actually asked for are never dropped or paraphrased away, even under the most aggressive compression.
+
+## Why llmigrate
+
+- **One call, swappable strategies.** `transfer(messages, strategy="...")` — going from "keep the last few turns" to "summarize everything but the tail" to "extract a structured handoff capsule" is a one-line change, not a rewrite.
+- **Protected content, enforced centrally.** No strategy — truncation, summarization, or selection — can drop or dilute the system prompt or the first user message. This is checked by a framework-level guarantee and a registry-wide test, not left to each strategy's discretion. See [Protected Content](docs/API.md#protected-content-pinning).
+- **Provider-agnostic.** Pass OpenAI-format dicts, Anthropic-format dicts, or llmigrate's own canonical `Message` objects — the format is auto-detected. Model-assisted strategies take a plain `generate` callable rather than depending on any SDK, so any OpenAI-compatible endpoint (OpenAI itself, vLLM, LocalAI, LM Studio, Ollama, ...) works out of the box.
+- **Zero required dependencies.** Core functionality is pure standard library. `tiktoken` (accurate token counts) and `openai` (ready-made `generate` builders) are optional extras.
+- **Built for the messy cases**, not just clean chat transcripts: turn-boundary grouping keeps tool calls paired with their results, role-alternation is fixed up automatically for providers that reject consecutive same-role turns, and every model call reports latency/token accounting so migrations stay observable.
 
 ## Installation
 
@@ -31,97 +39,25 @@ messages = [
 result = llmigrate.transfer(messages, strategy="keep_last", n=3)
 
 # result.messages is ready to send to the target model
-response = target_client.chat(messages=result.messages)
+response = target_client.chat(messages=result.to_openai())
 ```
 
-## Strategies
-
-| Strategy | Description | Requires model call |
-|---|---|---|
-| `raw` | Pass conversation unchanged | No |
-| `keep_last` | Keep pinned content + last N turns | No |
-| `token_budget` | Keep as many recent turns as fit within a token budget | No |
-| `summarize` | Summarize older history, keep recent tail | Yes |
-| `capsule` | Extract structured state (objective, progress, key facts) | Yes |
-| `audit` | Append verification instructions for the receiving model | No |
-| `selective_history` | Verbatim, budget-constrained selection of events, ranked by a pluggable selector | No |
-| `summary_tail` | Summarized prefix + verbatim, turn-aligned tail, with cost/latency accounting | Yes |
+Swap `strategy="keep_last"` for `"summarize"`, `"capsule"`, `"token_budget"`, `"selective_history"`, `"summary_tail"`, `"audit"`, or `"raw"` to change how the handoff is shaped — see the [strategy reference](docs/API.md#strategies) for what each one does and which use cases it fits.
 
 ## Protected Content
 
-Every strategy that can drop or rewrite content is built on a shared, framework-level guarantee: the system prompt and the first user message (e.g. a task description) are always preserved verbatim, never fed to a summarizer, and never dropped — regardless of how aggressive the truncation is:
+The system prompt and the first user message (e.g. a task description) are always preserved verbatim, never fed to a summarizer, and never dropped — regardless of how aggressive the transformation is:
 
 ```python
 # Even with n=0, the task description survives.
 result = llmigrate.transfer(messages, strategy="keep_last", n=0)
 ```
 
-Disable this for a specific call with `pin_first_user=False`, or protect an arbitrary message yourself with `metadata["pinned"] = True`.
+Disable this for a specific call with `pin_first_user=False`, or protect an arbitrary message yourself with `metadata["pinned"] = True`. Full semantics: [Protected Content](docs/API.md#protected-content-pinning).
 
-## Model-Assisted Strategies
+## Documentation
 
-Strategies that need a model call (`summarize`, `capsule`, `summary_tail`) accept a `generate` callable, which may be sync or async:
-
-```python
-result = llmigrate.transfer(
-    messages,
-    strategy="summarize",
-    generate=my_generate_fn,       # Callable[[list[dict]], str], sync or async
-    generate_kwargs={"temperature": 0.2},
-    tail=3,
-)
-```
-
-The `generate` function takes a list of messages and returns a string completion. This keeps llmigrate decoupled from any specific provider SDK.
-
-### OpenAI-compatible endpoints (including vLLM, LocalAI, ...)
-
-For OpenAI itself or any OpenAI-compatible server, `generators.py` builds a ready-made `generate` callable (requires `pip install llmigrate[openai]`):
-
-```python
-from llmigrate.generators import openai_compatible_generate
-
-generate = openai_compatible_generate(
-    base_url="http://localhost:8000/v1",  # e.g. a local vLLM server
-    model="meta-llama/Llama-3-70b-instruct",
-)
-result = llmigrate.transfer(messages, strategy="summarize", generate=generate)
-```
-
-An async variant, `async_openai_compatible_generate`, is also available.
-
-## Selective Retention and Summary+Tail
-
-`selective_history` never rewrites content — it selects a verbatim subset of events, ranked by a pluggable selector, that fits a token budget:
-
-```python
-from llmigrate.selectors import PrioritySelector
-
-result = llmigrate.transfer(
-    messages,
-    strategy="selective_history",
-    budget=4000,
-    selector=PrioritySelector(priorities={"user_instruction": 100, "tool_result": 80, "assistant": 20}),
-    always_keep={"tool_result"},
-)
-```
-
-`summary_tail` summarizes older history while keeping the most recent turns verbatim, with cost/latency accounting for the summarization call:
-
-```python
-result = llmigrate.transfer(
-    messages,
-    strategy="summary_tail",
-    total_budget=8000,
-    summary_budget=1000,
-    generate=my_generate_fn,
-)
-print(result.metadata["latency_ms"], result.metadata["token_usage"])
-```
-
-## Format Support
-
-Pass OpenAI-format dicts, Anthropic-format dicts (auto-detected), or llmigrate's canonical `Message` objects — `transfer()` figures out which. Convert the result back with `result.to_openai()` or `result.to_anthropic()`.
+The [API reference](docs/API.md) covers the full `transfer()` signature, every strategy and its parameters/metadata, the pluggable `Selector`/`Summarizer` abstractions, format adapters, and the framework-level pinning/alternation guarantees.
 
 ## License
 
