@@ -10,6 +10,10 @@ from llmigrate.types import Message
 
 _ANTHROPIC_BLOCK_TYPES = {"text", "tool_use", "tool_result", "image"}
 
+OPENAI = "openai"
+ANTHROPIC = "anthropic"
+CANONICAL = "canonical"
+
 
 def _looks_like_anthropic(messages: list[dict[str, Any]]) -> bool:
     """Anthropic messages use content-block lists; OpenAI messages use plain
@@ -21,6 +25,23 @@ def _looks_like_anthropic(messages: list[dict[str, Any]]) -> bool:
         ):
             return True
     return False
+
+
+def detect_format(messages: list[dict[str, Any]] | list[Message]) -> str:
+    """Detect the format of the input messages.
+
+    Returns ``"openai"``, ``"anthropic"``, or ``"canonical"``.
+    """
+    if not messages:
+        return OPENAI
+    first = messages[0]
+    if isinstance(first, Message):
+        return CANONICAL
+    if isinstance(first, dict):
+        if _looks_like_anthropic(messages):  # type: ignore[arg-type]
+            return ANTHROPIC
+        return OPENAI
+    return OPENAI
 
 
 def auto_convert(messages: list[dict[str, Any]] | list[Message]) -> list[Message]:

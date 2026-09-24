@@ -70,7 +70,7 @@ class TestVerbatimIfFits:
         assert called == []
         assert result.metadata["prefix_event_ids"] == []
         for m in MESSAGES:
-            assert any(m["content"] in out.content for out in result.messages)
+            assert any(m["content"] in out["content"] for out in result.messages)
 
 
 class TestSummaryPrefixPlusTail:
@@ -89,7 +89,11 @@ class TestSummaryPrefixPlusTail:
             tail_budget=10,
             generate=_mock_generate,
         )
-        segments = {m.metadata.get("segment") for m in result.messages if "segment" in m.metadata}
+        segments = {
+            m.get("llmigrate", {}).get("segment")
+            for m in result.messages
+            if m.get("llmigrate", {}).get("segment")
+        }
         assert "summary_prefix" in segments or "verbatim_tail" in segments
 
     def test_metadata_shape(self):

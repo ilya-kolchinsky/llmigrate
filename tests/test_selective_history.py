@@ -6,7 +6,6 @@ import pytest
 
 import llmigrate
 from llmigrate.selectors import PrioritySelector, RelevanceSelector
-from llmigrate.types import Role
 
 MESSAGES = [
     {"role": "system", "content": "You are a helpful assistant."},
@@ -44,7 +43,7 @@ class TestPrioritySelector:
         )
         original_texts = {m["content"] for m in MESSAGES}
         for m in result.messages:
-            for part in m.content.split("\n\n"):
+            for part in m["content"].split("\n\n"):
                 assert part in original_texts
 
     def test_output_is_chronological(self):
@@ -60,8 +59,7 @@ class TestPrioritySelector:
         result = llmigrate.transfer(
             MESSAGES, strategy="selective_history", budget=1, selector=selector
         )
-        # pinned content is always kept regardless of budget; nothing else fits
-        assert result.messages[0].role == Role.SYSTEM
+        assert result.messages[0]["role"] == "system"
 
     def test_always_keep_forces_category(self):
         selector = PrioritySelector(priorities={"assistant": 100})
@@ -73,7 +71,7 @@ class TestPrioritySelector:
             always_keep={"user_instruction"},
         )
         user_texts = {m["content"] for m in MESSAGES if m["role"] == "user"}
-        result_texts = {part for m in result.messages for part in m.content.split("\n\n")}
+        result_texts = {part for m in result.messages for part in m["content"].split("\n\n")}
         assert user_texts <= result_texts
 
     def test_metadata_shape(self):
@@ -101,4 +99,4 @@ class TestRelevanceSelector:
         result = llmigrate.transfer(
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
-        assert any("KeyError" in m.content for m in result.messages)
+        assert any("KeyError" in m["content"] for m in result.messages)

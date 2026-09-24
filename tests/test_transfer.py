@@ -39,8 +39,8 @@ TOOL_MESSAGES = [
 
 
 def _tool_ids(messages):
-    call_ids = {call["id"] for m in messages for call in m.metadata.get("tool_calls", [])}
-    result_ids = {m.metadata["tool_call_id"] for m in messages if "tool_call_id" in m.metadata}
+    call_ids = {call["id"] for m in messages for call in m.get("tool_calls", [])}
+    result_ids = {m["tool_call_id"] for m in messages if "tool_call_id" in m}
     return call_ids, result_ids
 
 
@@ -69,14 +69,14 @@ class TestKeepLastStrategy:
         result = llmigrate.transfer(
             SAMPLE_MESSAGES, strategy="keep_last", n=2, pin_first_user=False
         )
-        assert result.messages[0].role == Role.SYSTEM
+        assert result.messages[0]["role"] == "system"
         # system + last 2 turns (4 messages: "What is 2+2?"/"4", "Thanks"/"You're welcome!")
         assert len(result.messages) == 5
 
     def test_n_zero_keeps_only_pinned(self):
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="keep_last", n=0)
-        assert [m.role for m in result.messages] == [Role.SYSTEM, Role.USER]
-        assert result.messages[1].content == "Hello"
+        assert [m["role"] for m in result.messages] == ["system", "user"]
+        assert result.messages[1]["content"] == "Hello"
 
     def test_keeps_all_when_n_exceeds_length(self):
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="keep_last", n=100)
@@ -98,7 +98,7 @@ class TestTokenBudgetStrategy:
             SAMPLE_MESSAGES, strategy="token_budget", max_tokens=5, pin_first_user=False
         )
         assert len(result.messages) < len(SAMPLE_MESSAGES)
-        assert result.messages[0].role == Role.SYSTEM
+        assert result.messages[0]["role"] == "system"
 
     def test_large_budget_keeps_all(self):
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="token_budget", max_tokens=100000)
@@ -124,7 +124,7 @@ class TestSummarizeStrategy:
             SAMPLE_MESSAGES, strategy="summarize", tail=2, pin_first_user=False
         )
         assert result.metadata["summarized"] is False
-        assert any("omitted" in m.content.lower() for m in result.messages)
+        assert any("omitted" in m["content"].lower() for m in result.messages)
 
     def test_with_generate(self):
         def mock_generate(messages):
@@ -134,7 +134,7 @@ class TestSummarizeStrategy:
             SAMPLE_MESSAGES, strategy="summarize", generate=mock_generate, tail=2
         )
         assert result.metadata["summarized"] is True
-        assert any("math" in m.content for m in result.messages)
+        assert any("math" in m["content"] for m in result.messages)
         assert "latency_ms" in result.metadata
 
     def test_generate_kwargs_passthrough(self):
@@ -160,7 +160,7 @@ class TestSummarizeStrategy:
         result = llmigrate.transfer(
             SAMPLE_MESSAGES, strategy="summarize", generate=mock_generate, tail=2
         )
-        assert any("async summary" in m.content for m in result.messages)
+        assert any("async summary" in m["content"] for m in result.messages)
 
     def test_pinned_task_not_fed_to_summarizer(self):
         captured_prompts = []
@@ -186,7 +186,7 @@ class TestCapsuleStrategy:
             return "## Objective\nanswer math questions\n\n## Completed\nanswered 2+2=4"
 
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="capsule", generate=mock_generate)
-        assert any("math" in m.content for m in result.messages)
+        assert any("math" in m["content"] for m in result.messages)
         assert result.metadata["capsule_data"]["objective"] == "answer math questions"
         assert result.metadata["capsule_data"]["completed"] == "answered 2+2=4"
 
@@ -195,7 +195,7 @@ class TestAuditStrategy:
     def test_appends_audit_message(self):
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="audit")
         assert len(result.messages) == len(SAMPLE_MESSAGES) + 1
-        assert result.messages[-1].metadata.get("audit_instruction") is True
+        assert result.messages[-1].get("llmigrate", {}).get("audit_instruction") is True
 
     def test_custom_instruction(self):
         result = llmigrate.transfer(
@@ -203,11 +203,11 @@ class TestAuditStrategy:
             strategy="audit",
             instruction="Check everything twice.",
         )
-        assert "twice" in result.messages[-1].content
+        assert "twice" in result.messages[-1]["content"]
 
     def test_source_model_interpolated(self):
         result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="audit", source_model="gpt-4o")
-        assert "gpt-4o" in result.messages[-1].content
+        assert "gpt-4o" in result.messages[-1]["content"]
         assert result.metadata["source_model"] == "gpt-4o"
 
 
@@ -225,6 +225,83 @@ class TestCanonicalInput:
         ]
         result = llmigrate.transfer(canonical, strategy="raw")
         assert len(result.messages) == 2
+
+
+class TestTargetFormat:
+    def test_defaults_to_source_format(self):
+        result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="raw")
+        assert result.format == "openai"
+        assert result.system is None
+        assert isinstance(result.messages[0], dict)
+        assert "role" in result.messages[0]
+
+    def test_openai_to_anthropic(self):
+        result = llmigrate.transfer(SAMPLE_MESSAGES, strategy="raw", target_format="anthropic")
+        assert result.format == "anthropic"
+        assert result.system == "You are a helpful assistant."
+        assert all(m["role"] != "system" for m in result.messages)
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["content"] == "Hello"
+
+    def test_anthropic_to_openai(self):
+        anthropic_messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Hi!"}]},
+        ]
+        result = llmigrate.transfer(anthropic_messages, strategy="raw", target_format="openai")
+        assert result.format == "openai"
+        assert result.system is None
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[0]["content"] == "Hello"
+
+    def test_anthropic_input_defaults_to_anthropic_output(self):
+        anthropic_messages = [
+            {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "Hi!"}]},
+        ]
+        result = llmigrate.transfer(anthropic_messages, strategy="raw")
+        assert result.format == "anthropic"
+
+    def test_canonical_input_defaults_to_openai(self):
+        canonical = [
+            llmigrate.Message(role=Role.USER, content="Hello"),
+            llmigrate.Message(role=Role.ASSISTANT, content="Hi"),
+        ]
+        result = llmigrate.transfer(canonical, strategy="raw")
+        assert result.format == "openai"
+
+    def test_rejects_unknown_format(self):
+        with pytest.raises(ValueError, match="Unknown target_format"):
+            llmigrate.transfer(SAMPLE_MESSAGES, strategy="raw", target_format="gemini")
+
+    def test_format_with_strategy(self):
+        result = llmigrate.transfer(
+            SAMPLE_MESSAGES, strategy="keep_last", n=2, target_format="anthropic"
+        )
+        assert result.format == "anthropic"
+        assert result.system is not None
+        assert all(m["role"] in ("user", "assistant") for m in result.messages)
+
+    def test_anthropic_format_system_is_none_when_no_system(self):
+        no_system = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        result = llmigrate.transfer(no_system, strategy="raw", target_format="anthropic")
+        assert result.system is None
+
+    def test_llmigrate_metadata_in_output(self):
+        def mock_generate(messages):
+            return "Summary text."
+
+        result = llmigrate.transfer(
+            SAMPLE_MESSAGES, strategy="summarize", generate=mock_generate, tail=1
+        )
+        synthetic_msgs = [
+            m for m in result.messages
+            if m.get("llmigrate", {}).get("llmigrate_synthetic")
+        ]
+        assert len(synthetic_msgs) > 0
 
 
 class TestValidation:

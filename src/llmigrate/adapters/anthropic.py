@@ -13,6 +13,8 @@ from typing import Any
 
 from llmigrate.types import Message, Role
 
+_PROVIDER_META_KEYS = frozenset({"tool_calls", "tool_call_id", "name", "anthropic_content"})
+
 
 def from_anthropic(messages: list[dict[str, Any]], system: str | None = None) -> list[Message]:
     """Convert Anthropic-format messages (+ optional top-level system) to canonical Messages."""
@@ -68,7 +70,9 @@ def from_anthropic(messages: list[dict[str, Any]], system: str | None = None) ->
     return result
 
 
-def to_anthropic(messages: list[Message]) -> dict[str, Any]:
+def to_anthropic(
+    messages: list[Message], *, include_metadata: bool = False
+) -> dict[str, Any]:
     """Convert canonical Messages to Anthropic's {"system": ..., "messages": [...]} shape."""
     system_parts = [m.content for m in messages if m.role == Role.SYSTEM]
     system = "\n\n".join(system_parts) if system_parts else None
@@ -78,12 +82,12 @@ def to_anthropic(messages: list[Message]) -> dict[str, Any]:
         if msg.role == Role.SYSTEM:
             continue
 
+        d: dict[str, Any]
+
         if "anthropic_content" in msg.metadata:
             role_str = "assistant" if msg.role in (Role.ASSISTANT, Role.TOOL_CALL) else "user"
-            result.append({"role": role_str, "content": msg.metadata["anthropic_content"]})
-            continue
-
-        if msg.role == Role.TOOL_CALL:
+            d = {"role": role_str, "content": msg.metadata["anthropic_content"]}
+        elif msg.role == Role.TOOL_CALL:
             blocks: list[dict[str, Any]] = []
             if msg.content:
                 blocks.append({"type": "text", "text": msg.content})
@@ -101,22 +105,29 @@ def to_anthropic(messages: list[Message]) -> dict[str, Any]:
                         "input": tool_input,
                     }
                 )
-            result.append({"role": "assistant", "content": blocks})
+            d = {"role": "assistant", "content": blocks}
         elif msg.role == Role.TOOL_RESULT:
-            result.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": msg.metadata.get("tool_call_id"),
-                            "content": msg.content,
-                        }
-                    ],
-                }
-            )
+            d = {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": msg.metadata.get("tool_call_id"),
+                        "content": msg.content,
+                    }
+                ],
+            }
         else:
             role_str = "assistant" if msg.role == Role.ASSISTANT else "user"
-            result.append({"role": role_str, "content": msg.content})
+            d = {"role": role_str, "content": msg.content}
+
+        if include_metadata:
+            llm_meta = {
+                k: v for k, v in msg.metadata.items() if k not in _PROVIDER_META_KEYS
+            }
+            if llm_meta:
+                d["llmigrate"] = llm_meta
+
+        result.append(d)
 
     return {"system": system, "messages": result}

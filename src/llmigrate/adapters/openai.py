@@ -27,6 +27,8 @@ _REVERSE_ROLE_MAP = {
     Role.TOOL_RESULT: "tool",
 }
 
+_PROVIDER_META_KEYS = frozenset({"tool_calls", "tool_call_id", "name", "anthropic_content"})
+
 
 def from_openai(messages: list[dict[str, Any]]) -> list[Message]:
     """Convert OpenAI-format messages to canonical Messages."""
@@ -58,7 +60,9 @@ def from_openai(messages: list[dict[str, Any]]) -> list[Message]:
     return result
 
 
-def to_openai(messages: list[Message]) -> list[dict[str, Any]]:
+def to_openai(
+    messages: list[Message], *, include_metadata: bool = False
+) -> list[dict[str, Any]]:
     """Convert canonical Messages to OpenAI-format dicts."""
     result: list[dict[str, Any]] = []
     for msg in messages:
@@ -75,6 +79,13 @@ def to_openai(messages: list[Message]) -> list[dict[str, Any]]:
 
         if "name" in msg.metadata:
             d["name"] = msg.metadata["name"]
+
+        if include_metadata:
+            llm_meta = {
+                k: v for k, v in msg.metadata.items() if k not in _PROVIDER_META_KEYS
+            }
+            if llm_meta:
+                d["llmigrate"] = llm_meta
 
         result.append(d)
     return result

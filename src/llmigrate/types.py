@@ -61,13 +61,26 @@ class Strategy(Enum):
 class TransferResult:
     """Result of a transfer operation.
 
-    Contains the transformed messages ready for the target model,
-    plus metadata about the transformation that was applied.
+    Contains the transformed messages in wire format (OpenAI or Anthropic
+    dicts), ready to pass directly to the target provider's API.
+
+    Attributes:
+        messages: Conversation messages in the target wire format.
+            For OpenAI format, system messages are included in the list.
+            For Anthropic format, system messages are extracted into ``system``.
+        strategy: Which strategy was applied.
+        metadata: Transformation details (original_count, strategy-specific info).
+        format: Wire format of the output (``"openai"`` or ``"anthropic"``).
+        system: System prompt content, populated for Anthropic format
+            (where the system message is a separate API parameter).
+            ``None`` for OpenAI format.
     """
 
-    messages: list[Message]
+    messages: list[Message] | list[dict[str, Any]]
     strategy: Strategy
     metadata: dict[str, Any] = field(default_factory=dict)
+    format: str | None = None
+    system: str | None = None
 
     @property
     def original_count(self) -> int:
@@ -76,15 +89,3 @@ class TransferResult:
     @property
     def transferred_count(self) -> int:
         return len(self.messages)
-
-    def to_openai(self) -> list[dict[str, Any]]:
-        """Convert the transferred messages to OpenAI-format dicts."""
-        from llmigrate.adapters.openai import to_openai
-
-        return to_openai(self.messages)
-
-    def to_anthropic(self) -> dict[str, Any]:
-        """Convert the transferred messages to Anthropic's {"system", "messages"} shape."""
-        from llmigrate.adapters.anthropic import to_anthropic
-
-        return to_anthropic(self.messages)

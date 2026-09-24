@@ -65,7 +65,7 @@ tests/
 
 ## Public API
 
-### `llmigrate.transfer(messages, strategy, *, generate=None, generate_kwargs=None, source_model=None, target_model=None, enforce_alternation=True, **params) -> TransferResult`
+### `llmigrate.transfer(messages, strategy, *, generate=None, generate_kwargs=None, source_model=None, target_model=None, target_format=None, enforce_alternation=True, **params) -> TransferResult`
 
 Single entry point for all migrations.
 
@@ -74,14 +74,16 @@ Single entry point for all migrations.
 - `generate`: `Callable[[list[dict]], str]` — required for `summarize`/`capsule` (and `summary_tail` if no `summarizer` given). May be sync or async — async callables are auto-detected and awaited.
 - `generate_kwargs`: dict forwarded to `generate` on every call (e.g. `{"temperature": 0.2}`), kept separate from strategy params so the two namespaces never collide.
 - `source_model` / `target_model`: optional model names. Recorded in `result.metadata`; `token_budget`/`summary_tail`/`selective_history` use `target_model` to size a default token budget from a built-in context-window table (see `models.py`); `audit` uses `source_model` to customize its instruction.
+- `target_format`: `"openai"` or `"anthropic"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed).
 - `enforce_alternation`: default `True`. Merges consecutive same-role messages in the output (needed for providers like Anthropic that reject non-alternating turns). Skipped for `raw`, whose contract is "unchanged".
 - `**params`: strategy-specific parameters (see below). All strategies also accept `pin_first_user: bool = True` (see Protected Content below).
 
 Returns a `TransferResult` containing:
-- `messages`: `list[Message]` — the transformed conversation
+- `messages`: `list[dict]` — the transformed conversation in wire format, ready for the target provider's API. For OpenAI format, system messages are included in the list. For Anthropic format, system messages are extracted into `system`.
 - `strategy`: which strategy was applied
 - `metadata`: dict with transformation details (original_count, strategy-specific info)
-- `.to_openai()` / `.to_anthropic()`: convert the result back to a provider-native format
+- `format`: the wire format of the output (`"openai"` or `"anthropic"`)
+- `system`: `str | None` — the system prompt content (populated for Anthropic format, `None` for OpenAI format)
 
 ### Strategy Parameters
 
@@ -101,7 +103,7 @@ Returns a `TransferResult` containing:
 - `Message(role: Role, content: str, metadata: dict)` — canonical message
 - `Role` — enum: `SYSTEM`, `USER`, `ASSISTANT`, `TOOL_CALL`, `TOOL_RESULT`
 - `Strategy` — enum: `RAW`, `KEEP_LAST`, `TOKEN_BUDGET`, `SUMMARIZE`, `CAPSULE`, `AUDIT`, `SELECTIVE_HISTORY`, `SUMMARY_TAIL`
-- `TransferResult(messages, strategy, metadata)` — transform output, with `.to_openai()`/`.to_anthropic()`
+- `TransferResult(messages, strategy, metadata, format, system)` — transform output with wire-format messages
 - `Selector` protocol + `PrioritySelector`, `RelevanceSelector` (`selectors.py`)
 - `Summarizer` protocol + `SummarizerResult`, `TokenUsage`, `GenerateSummarizer` (`summarizers.py`)
 
@@ -116,7 +118,8 @@ Returns a `TransferResult` containing:
 - **Turn-boundary grouping** (`turns.py`): `group_into_turns()` groups a `USER` message with everything up to the next `USER` message, so truncation strategies (`keep_last`, `token_budget`, `summary_tail`'s tail) operate on whole turns and never split a turn pair or orphan a `TOOL_RESULT` from its `TOOL_CALL`. `selective_history` is the exception — see below.
 - **Model-assisted strategies** (`summarize`, `capsule`, `summary_tail`) accept a `generate` callable with signature `Callable[[list[dict]], str]`, sync or async (auto-detected via `_util.call_generate`). This decouples the library from any provider SDK. `generators.py` provides ready-made `generate` builders for OpenAI-compatible endpoints (OpenAI itself, vLLM, LocalAI, etc.) for convenience — optional, requires `pip install llmigrate[openai]`.
 - **Cost/latency accounting** (`summarizers.py`): `summary_tail` (and `summarize`, for `latency_ms`) records wall-clock latency and estimated token usage for every model call. A bare `generate` callable is auto-wrapped in `GenerateSummarizer`, which can only report latency/token estimates; implement the `Summarizer` protocol directly against your provider client for real cost/model reporting.
-- **Metadata on synthetic messages**: messages created by the library (summaries, capsules, audit instructions) carry `metadata["llmigrate_synthetic"] = True`. `summary_tail` additionally tags `metadata["segment"]` (`"summary_prefix"` / `"verbatim_tail"`) so the summarized/verbatim boundary is explicit in the output.
+- **Wire-format output**: `transfer()` always returns messages as provider-native dicts (OpenAI or Anthropic format), never canonical `Message` objects. The `target_format` parameter controls the output format, defaulting to the detected input format (or `"openai"` when canonical `Message` objects are passed). The canonical `Message` type is purely an internal implementation detail — users never need to interact with it.
+- **Metadata on synthetic messages**: messages created by the library (summaries, capsules, audit instructions) carry `llmigrate["llmigrate_synthetic"] = True` in the wire-format dict. `summary_tail` additionally tags `llmigrate["segment"]` (`"summary_prefix"` / `"verbatim_tail"`) so the summarized/verbatim boundary is explicit in the output. The `"llmigrate"` key in the dict namespaces library metadata away from provider-specific fields; extra keys are silently ignored by all major providers.
 
 ## Protected Content (framework-level)
 

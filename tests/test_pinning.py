@@ -50,7 +50,7 @@ TIGHT_PARAMS: dict[str, dict] = {
 @pytest.mark.parametrize("strategy", sorted(STRATEGY_REGISTRY.keys()))
 def test_preserves_task_marker(strategy):
     result = llmigrate.transfer(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
-    assert any(MARKER in m.content for m in result.messages), (
+    assert any(MARKER in m["content"] for m in result.messages), (
         f"{strategy} dropped or diluted the pinned task content"
     )
 
@@ -58,7 +58,7 @@ def test_preserves_task_marker(strategy):
 @pytest.mark.parametrize("strategy", sorted(s for s in STRATEGY_REGISTRY if s != "raw"))
 def test_no_consecutive_same_role_output(strategy):
     result = llmigrate.transfer(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
-    roles = [m.role for m in result.messages if m.role != Role.SYSTEM]
+    roles = [m["role"] for m in result.messages if m["role"] != "system"]
     for a, b in zip(roles, roles[1:]):
         assert a != b, f"{strategy} produced consecutive {a} messages"
 

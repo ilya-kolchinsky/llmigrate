@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
-from llmigrate.adapters.detect import auto_convert
+from llmigrate.adapters.anthropic import to_anthropic as _to_anthropic
+from llmigrate.adapters.detect import ANTHROPIC as _ANTHROPIC
+from llmigrate.adapters.detect import CANONICAL as _CANONICAL
+from llmigrate.adapters.detect import OPENAI as _OPENAI
+from llmigrate.adapters.detect import auto_convert, detect_format
+from llmigrate.adapters.openai import to_openai as _to_openai
 from llmigrate.alternation import enforce_alternation as _enforce_alternation
 from llmigrate.generators import async_openai_compatible_generate, openai_compatible_generate
 from llmigrate.models import register_model_context_window
@@ -38,6 +43,9 @@ __all__ = [
 _NO_ALTERNATION_ENFORCEMENT = {"raw"}
 
 
+_VALID_FORMATS = {_OPENAI, _ANTHROPIC}
+
+
 def transfer(
     messages: list[dict[str, Any]] | list[Message],
     strategy: str = "raw",
@@ -46,6 +54,7 @@ def transfer(
     generate_kwargs: dict[str, Any] | None = None,
     source_model: str | None = None,
     target_model: str | None = None,
+    target_format: str | None = None,
     enforce_alternation: bool = True,
     **params: Any,
 ) -> TransferResult:
@@ -66,21 +75,32 @@ def transfer(
                   by `token_budget`/`summary_tail`/`selective_history` to
                   size defaults from a built-in context-window table, and
                   recorded in metadata.
+        target_format: Wire format for the output messages (``"openai"`` or
+                  ``"anthropic"``). When omitted, defaults to the detected
+                  format of the input (or ``"openai"`` if canonical Message
+                  objects are passed).
         enforce_alternation: Merge consecutive same-role messages in the output
                   (default True) so results are safe for providers that reject
                   non-alternating turns (e.g. Anthropic). Skipped for `raw`.
         **params: Strategy-specific parameters (e.g. n=5 for keep_last).
 
     Returns:
-        TransferResult with transformed messages (canonical Message objects)
-        and metadata. Use result.to_openai()/result.to_anthropic() to convert
-        back to a provider-native format.
+        TransferResult with transformed messages as wire-format dicts,
+        ready to pass directly to the target provider's API.
     """
     if strategy not in STRATEGY_REGISTRY:
         available = ", ".join(sorted(STRATEGY_REGISTRY.keys()))
         raise ValueError(f"Unknown strategy: {strategy!r}. Available: {available}")
 
     _validate_messages_input(messages)
+
+    detected = detect_format(messages)
+    resolved_format = target_format or (detected if detected != _CANONICAL else _OPENAI)
+    if resolved_format not in _VALID_FORMATS:
+        raise ValueError(
+            f"Unknown target_format: {resolved_format!r}. Must be 'openai' or 'anthropic'."
+        )
+
     canonical = _validate_canonical(auto_convert(messages))
 
     if generate is not None:
@@ -101,7 +121,20 @@ def transfer(
         result.metadata.setdefault("target_model", target_model)
 
     if enforce_alternation and strategy not in _NO_ALTERNATION_ENFORCEMENT:
-        result.messages = _enforce_alternation(result.messages)
+        result.messages = _enforce_alternation(
+            cast(list[Message], result.messages)
+        )
+
+    # Convert to wire format
+    canonical_out = cast(list[Message], result.messages)
+    if resolved_format == _ANTHROPIC:
+        anthropic_out = _to_anthropic(canonical_out, include_metadata=True)
+        result.messages = anthropic_out["messages"]
+        result.system = anthropic_out["system"]
+    else:
+        result.messages = _to_openai(canonical_out, include_metadata=True)
+        result.system = None
+    result.format = resolved_format
 
     return result
 
