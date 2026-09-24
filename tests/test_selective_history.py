@@ -20,17 +20,17 @@ MESSAGES = [
 class TestRequiredParams:
     def test_requires_budget(self):
         with pytest.raises(ValueError, match="budget"):
-            llmigrate.transfer(
+            llmigrate.migrate(
                 MESSAGES, strategy="selective_history", selector=PrioritySelector({})
             )
 
     def test_requires_selector(self):
         with pytest.raises(ValueError, match="selector"):
-            llmigrate.transfer(MESSAGES, strategy="selective_history", budget=1000)
+            llmigrate.migrate(MESSAGES, strategy="selective_history", budget=1000)
 
     def test_rejects_negative_budget(self):
         with pytest.raises(ValueError, match="non-negative"):
-            llmigrate.transfer(
+            llmigrate.migrate(
                 MESSAGES, strategy="selective_history", budget=-1, selector=PrioritySelector({})
             )
 
@@ -38,7 +38,7 @@ class TestRequiredParams:
 class TestPrioritySelector:
     def test_content_is_verbatim(self):
         selector = PrioritySelector(priorities={"user_instruction": 100, "assistant": 10})
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
         original_texts = {m["content"] for m in MESSAGES}
@@ -48,7 +48,7 @@ class TestPrioritySelector:
 
     def test_output_is_chronological(self):
         selector = PrioritySelector(priorities={"user_instruction": 100, "assistant": 10})
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
         selected_ids = result.metadata["selected_event_ids"]
@@ -56,14 +56,14 @@ class TestPrioritySelector:
 
     def test_respects_tight_budget(self):
         selector = PrioritySelector(priorities={"user_instruction": 100, "assistant": 10})
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES, strategy="selective_history", budget=1, selector=selector
         )
         assert result.messages[0]["role"] == "system"
 
     def test_always_keep_forces_category(self):
         selector = PrioritySelector(priorities={"assistant": 100})
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES,
             strategy="selective_history",
             budget=10_000,
@@ -76,7 +76,7 @@ class TestPrioritySelector:
 
     def test_metadata_shape(self):
         selector = PrioritySelector(priorities={"user_instruction": 100})
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
         for key in (
@@ -96,7 +96,7 @@ class TestRelevanceSelector:
             return [[1.0 if word in t.lower() else 0.0 for word in vocab] for t in texts]
 
         selector = RelevanceSelector(embed=embed, query="traceback keyerror")
-        result = llmigrate.transfer(
+        result = llmigrate.migrate(
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
         assert any("KeyError" in m["content"] for m in result.messages)

@@ -1,6 +1,6 @@
 """Core types for llmigrate.
 
-The canonical message representation and transfer result types.
+The canonical message representation and migration result types.
 These are the only types in the public API.
 """
 
@@ -51,33 +51,46 @@ class Strategy(Enum):
     KEEP_LAST = "keep_last"
     TOKEN_BUDGET = "token_budget"
     SUMMARIZE = "summarize"
-    CAPSULE = "capsule"
+    STRUCTURED_STATE = "structured_state"
     AUDIT = "audit"
     SELECTIVE_HISTORY = "selective_history"
-    SUMMARY_TAIL = "summary_tail"
+
+
+class StrategyCategory(Enum):
+    SELECTION = "selection"
+    TRANSFORMATION = "transformation"
+    VALIDATION = "validation"
 
 
 @dataclass
-class TransferResult:
-    """Result of a transfer operation.
+class SelectionResult:
+    kept: list[Message]
+    dropped: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class CompressionResult:
+    messages: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ValidationResult:
+    messages: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class MigrationResult:
+    """Result of a migrate operation.
 
     Contains the transformed messages in wire format (OpenAI or Anthropic
     dicts), ready to pass directly to the target provider's API.
-
-    Attributes:
-        messages: Conversation messages in the target wire format.
-            For OpenAI format, system messages are included in the list.
-            For Anthropic format, system messages are extracted into ``system``.
-        strategy: Which strategy was applied.
-        metadata: Transformation details (original_count, strategy-specific info).
-        format: Wire format of the output (``"openai"`` or ``"anthropic"``).
-        system: System prompt content, populated for Anthropic format
-            (where the system message is a separate API parameter).
-            ``None`` for OpenAI format.
     """
 
     messages: list[Message] | list[dict[str, Any]]
-    strategy: Strategy
+    strategies: list[Strategy]
     metadata: dict[str, Any] = field(default_factory=dict)
     format: str | None = None
     system: str | None = None

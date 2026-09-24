@@ -23,7 +23,7 @@ def openai_compatible_generate(
     """Build a sync `generate` callable pointed at any OpenAI-compatible endpoint.
 
     `default_kwargs` (e.g. temperature) are applied to every call and
-    overridden by transfer()'s `generate_kwargs` on a per-call basis.
+    overridden by migrate()'s `generate_kwargs` on a per-call basis.
     """
     if client is None:
         try:
@@ -52,7 +52,7 @@ def async_openai_compatible_generate(
     **default_kwargs: Any,
 ) -> Callable[..., Awaitable[str]]:
     """Async counterpart of openai_compatible_generate — plugs directly into
-    transfer()'s automatic async-`generate` detection."""
+    migrate()'s automatic async-`generate` detection."""
     if client is None:
         try:
             from openai import AsyncOpenAI

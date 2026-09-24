@@ -1,5 +1,5 @@
 """Pluggable event-retention selectors, used as parameter values by the
-selective_history strategy (llmigrate.transfer(..., strategy="selective_history",
+selective_history strategy (llmigrate.migrate(..., strategy="selective_history",
 selector=PrioritySelector(...))).
 """
 

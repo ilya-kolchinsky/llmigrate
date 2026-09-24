@@ -1,4 +1,4 @@
-"""Framework-level role-alternation enforcement, applied centrally in transfer().
+"""Framework-level role-alternation enforcement, applied centrally in migrate().
 
 Many providers (notably Anthropic) reject a message list with consecutive
 same-role turns. Truncation/summarization strategies can incidentally produce

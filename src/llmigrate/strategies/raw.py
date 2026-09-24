@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from llmigrate.types import Message, Strategy, TransferResult
+from llmigrate.types import Message, MigrationResult, Strategy
 
 
-def transform(messages: list[Message], **params: Any) -> TransferResult:
-    return TransferResult(
+def transform(messages: list[Message], **params: Any) -> MigrationResult:
+    return MigrationResult(
         messages=list(messages),
-        strategy=Strategy.RAW,
+        strategies=[Strategy.RAW],
         metadata={"original_count": len(messages)},
     )

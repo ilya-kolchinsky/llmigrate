@@ -15,7 +15,7 @@ def call_generate(generate: Callable[..., Any], prompt: Any, **kwargs: Any) -> s
             return cast(str, asyncio.run(generate(prompt, **kwargs)))
         except RuntimeError as e:
             raise RuntimeError(
-                "generate is async but transfer() was called from within a "
-                "running event loop; call transfer() from synchronous code."
+                "generate is async but migrate() was called from within a "
+                "running event loop; call migrate() from synchronous code."
             ) from e
     return cast(str, generate(prompt, **kwargs))

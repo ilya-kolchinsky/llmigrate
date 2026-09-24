@@ -24,7 +24,7 @@ def split_pinned(
     - its role is SYSTEM
     - it is the first USER message, and pin_first_user is True (the default)
     - it carries metadata["pinned"] = True (an explicit escape hatch for callers
-      who want to protect something else, e.g. a prior transfer's capsule)
+      who want to protect something else, e.g. a prior transfer's structured state)
     """
     pinned: list[Message] = []
     rest: list[Message] = []

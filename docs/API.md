@@ -1,20 +1,20 @@
 # llmigrate API Reference
 
-This document is the rigorous reference for llmigrate: the `transfer()` entry point, every strategy and its parameters, the core types, and the supporting abstractions (pinning, alternation, selectors, summarizers, token estimation, model context windows, `generate()` builders, and format adapters). For the pitch and a quick start, see the [README](../README.md).
+This document is the rigorous reference for llmigrate: the `migrate()` entry point, every strategy and its parameters, the core types, and the supporting abstractions (pinning, alternation, selectors, summarizers, token estimation, model context windows, `generate()` builders, and format adapters). For the pitch and a quick start, see the [README](../README.md).
 
 ## Table of Contents
 
-- [`transfer()`](#transfer)
+- [`migrate()`](#migrate)
 - [Core Types](#core-types)
 - [Strategies](#strategies)
   - [`raw`](#raw)
   - [`keep_last`](#keep_last)
   - [`token_budget`](#token_budget)
   - [`summarize`](#summarize)
-  - [`capsule`](#capsule)
+  - [`structured_state`](#structured_state)
   - [`audit`](#audit)
   - [`selective_history`](#selective_history)
-  - [`summary_tail`](#summary_tail)
+- [Strategy Composition](#strategy-composition)
 - [Protected Content (pinning)](#protected-content-pinning)
 - [Role Alternation](#role-alternation)
 - [Turn Grouping](#turn-grouping)
@@ -27,53 +27,65 @@ This document is the rigorous reference for llmigrate: the `transfer()` entry po
 - [Errors & Validation](#errors--validation)
 - [Adding a New Strategy](#adding-a-new-strategy)
 
-## `transfer()`
+## `migrate()`
 
 ```python
-llmigrate.transfer(
+llmigrate.migrate(
     messages: list[dict] | list[Message],
-    strategy: str = "raw",
+    strategy: str | None = None,
     *,
+    strategies: list[str] | None = None,
     generate: Callable[..., str] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
     source_model: str | None = None,
     target_model: str | None = None,
+    target_format: str | None = None,
     enforce_alternation: bool = True,
     **params: Any,
-) -> TransferResult
+) -> MigrationResult
 ```
 
-The single entry point for every migration. `transfer()`:
+The single entry point for every migration. `migrate()`:
 
 1. Validates `messages` (must be a `list`; every element must be a `dict` with a `"role"` key, or a `Message`).
 2. Auto-detects the input format (OpenAI dict, Anthropic dict, or canonical `Message`) and converts to canonical `Message` objects — see [Format Adapters](#format-adapters).
 3. Validates that every message's `content` is a `str`.
-4. Looks up `strategy` in the strategy registry and calls its `transform(messages, **params)` function, forwarding `generate`, `generate_kwargs`, `source_model`, and `target_model` into `params` when given.
+4. Routes to the appropriate execution path:
+   - `strategy="X"` (single): looks up `X` in the strategy registry and calls its `transform()` function directly, producing flat metadata.
+   - `strategies=[...]` (pipeline): validates the composition (at most one per category), then executes the pipeline in canonical order: selection → transformation → validation. Metadata is namespaced by category.
+   - Neither specified (or `strategy="raw"` / `strategies=[]`): identity transform.
 5. Records `source_model`/`target_model` into `result.metadata` if not already set by the strategy.
-6. Unless `strategy == "raw"` and unless `enforce_alternation=False`, merges consecutive same-role messages in the output — see [Role Alternation](#role-alternation).
+6. Unless the strategy is `raw`, merges consecutive same-role messages in the output — see [Role Alternation](#role-alternation). Controlled by `enforce_alternation`.
+7. Converts canonical `Message` objects to wire-format dicts (OpenAI or Anthropic) based on `target_format`.
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `messages` | `list[dict] \| list[Message]` | required | Conversation history. OpenAI-format dicts, Anthropic-format dicts, or canonical `Message` objects — auto-detected, may not be mixed within a single call except uniformly as `Message`. |
-| `strategy` | `str` | `"raw"` | One of `"raw"`, `"keep_last"`, `"token_budget"`, `"summarize"`, `"capsule"`, `"audit"`, `"selective_history"`, `"summary_tail"`. Unknown names raise `ValueError` listing the available strategies. |
-| `generate` | `Callable[[list[dict]], str] \| None` | `None` | Model call used by `summarize`, `capsule`, and (as a fallback for `summarizer`) `summary_tail`. May be a sync or async callable — async is auto-detected and awaited via `asyncio.run`. Forwarded into `params["generate"]`. |
+| `strategy` | `str \| None` | `None` | Single strategy name — `"raw"`, `"keep_last"`, `"token_budget"`, `"summarize"`, `"structured_state"`, `"audit"`, `"selective_history"`. Sugar for `strategies=["X"]` but with flat (not namespaced) metadata. Mutually exclusive with `strategies`. |
+| `strategies` | `list[str] \| None` | `None` | List of strategy names to compose, in any order. At most one from each category (selection, transformation, validation). The library sorts internally: selection → transformation → validation. Mutually exclusive with `strategy`. |
+| `generate` | `Callable[[list[dict]], str] \| None` | `None` | Model call used by `summarize` and `structured_state`. May be a sync or async callable — async is auto-detected and awaited via `asyncio.run`. Forwarded into `params["generate"]`. |
 | `generate_kwargs` | `dict \| None` | `None` | Extra keyword arguments (e.g. `{"temperature": 0.2}`) passed to `generate` (or to the auto-wrapped `Summarizer`) on every call. Kept as a separate namespace from strategy params so the two can never collide — e.g. a strategy param named `temperature` would otherwise be ambiguous. |
 | `source_model` | `str \| None` | `None` | Name of the model the conversation started on. Recorded in `result.metadata["source_model"]`; interpolated into `audit`'s default instruction. |
-| `target_model` | `str \| None` | `None` | Name of the model the conversation is moving to. Recorded in `result.metadata["target_model"]`; used by `token_budget`, `summary_tail`, and `selective_history` to size a default token budget and to pick a model-appropriate tokenizer — see [Model Context Windows](#model-context-windows) and [Token Estimation](#token-estimation). |
+| `target_model` | `str \| None` | `None` | Name of the model the conversation is moving to. Recorded in `result.metadata["target_model"]`; used by `token_budget` and `selective_history` to size a default token budget and to pick a model-appropriate tokenizer — see [Model Context Windows](#model-context-windows) and [Token Estimation](#token-estimation). |
+| `target_format` | `str \| None` | `None` | `"openai"` or `"anthropic"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed). |
 | `enforce_alternation` | `bool` | `True` | Merge consecutive same-role messages in the result. Always skipped for `strategy="raw"` regardless of this flag, since `raw`'s contract is "unchanged". |
 | `**params` | `Any` | — | Strategy-specific parameters. See each strategy's table below. Every strategy that can drop or rewrite content also accepts `pin_first_user: bool = True` (see [Protected Content](#protected-content-pinning)). |
 
 ### Returns
 
-A `TransferResult` (see [Core Types](#core-types)).
+A `MigrationResult` (see [Core Types](#core-types)).
 
 ### Raises
 
 - `ValueError` — unknown `strategy` name, or a strategy-specific validation failure (see each strategy's table).
+- `ValueError` — both `strategy` and `strategies` specified.
+- `ValueError` — `strategies` contains duplicate categories (e.g. two selection strategies).
+- `ValueError` — `"raw"` combined with other strategies in `strategies`.
 - `TypeError` — `messages` is not a `list`, or an element is neither a `dict` nor a `Message`.
 - `ValueError` — a `dict` element is missing the `"role"` key, or any message's `content` is not a `str` after conversion.
+- `ValueError` — unknown `target_format`.
 
 ## Core Types
 
@@ -87,7 +99,7 @@ class Message:
     metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
-The canonical, provider-agnostic message representation. `to_dict()` / `from_dict()` round-trip through `{"role": ..., "content": ..., "metadata": ...}` (metadata omitted when empty).
+The canonical, provider-agnostic message representation. `to_dict()` / `from_dict()` round-trip through `{"role": ..., "content": ..., "metadata": ...}` (metadata omitted when empty). This type is purely internal — `migrate()` always returns wire-format dicts, not `Message` objects.
 
 Metadata keys used across the library:
 
@@ -95,8 +107,7 @@ Metadata keys used across the library:
 |---|---|---|
 | `pinned` | caller | Forces this message to be treated as protected content by `split_pinned()`, regardless of role or position. |
 | `category` | caller | Overrides the default role-derived category used by `selective_history`'s selectors (see [Selectors](#selectors)). |
-| `llmigrate_synthetic` | library | Set on any message the library generates (summaries, capsules, audit instructions). Also propagated onto a merged message by `enforce_alternation` if either half was synthetic. |
-| `segment` | `summary_tail` | `"summary_prefix"` or `"verbatim_tail"` — marks which half of a `summary_tail` output a message belongs to. |
+| `llmigrate_synthetic` | library | Set on any message the library generates (summaries, structured state extractions, audit instructions). Also propagated onto a merged message by `enforce_alternation` if either half was synthetic. |
 | `tool_calls`, `tool_call_id`, `name` | OpenAI adapter | Preserved OpenAI tool-call fields, round-tripped by `to_openai()`. |
 | `anthropic_content`, `tool_call_id` | Anthropic adapter | Preserved Anthropic content-block payloads, round-tripped by `to_anthropic()`. |
 
@@ -119,36 +130,81 @@ class Strategy(Enum):
     KEEP_LAST = "keep_last"
     TOKEN_BUDGET = "token_budget"
     SUMMARIZE = "summarize"
-    CAPSULE = "capsule"
+    STRUCTURED_STATE = "structured_state"
     AUDIT = "audit"
     SELECTIVE_HISTORY = "selective_history"
-    SUMMARY_TAIL = "summary_tail"
 ```
 
-### `TransferResult`
+### `StrategyCategory`
+
+```python
+class StrategyCategory(Enum):
+    SELECTION = "selection"
+    TRANSFORMATION = "transformation"
+    VALIDATION = "validation"
+```
+
+Strategies are organized into categories. At most one strategy from each category can be used in a single `migrate()` call.
+
+| Category | Strategies | Purpose |
+|---|---|---|
+| **Selection** | `keep_last`, `token_budget`, `selective_history` | Choose which messages survive verbatim |
+| **Transformation** | `summarize`, `structured_state` | Compress dropped messages into something shorter |
+| **Validation** | `audit` | Prepare output for the target model |
+
+### `MigrationResult`
 
 ```python
 @dataclass
-class TransferResult:
-    messages: list[Message]
-    strategy: Strategy
+class MigrationResult:
+    messages: list[dict[str, Any]]
+    strategies: list[Strategy]
     metadata: dict[str, Any] = field(default_factory=dict)
+    format: str | None = None
+    system: str | None = None
 ```
 
+- `.messages` — the transformed conversation in wire format (OpenAI or Anthropic dicts), ready to pass directly to the target provider's API. For OpenAI format, system messages are included in the list. For Anthropic format, system messages are extracted into `.system`.
+- `.strategies` — list of `Strategy` enums that were applied.
+- `.metadata` — transformation details. When using `strategy=` (single), metadata is flat. When using `strategies=` (pipeline), metadata from each step is namespaced under `"selection"`, `"transformation"`, and `"validation"` keys.
+- `.format` — the wire format of the output (`"openai"` or `"anthropic"`).
+- `.system` — the system prompt content (populated for Anthropic format, `None` for OpenAI format).
 - `.original_count` — `int(metadata.get("original_count", 0))`, the length of the input.
 - `.transferred_count` — `len(messages)`, the length of the output.
-- `.to_openai() -> list[dict]` — converts `messages` to OpenAI-format dicts.
-- `.to_anthropic() -> dict` — converts `messages` to Anthropic's `{"system": str | None, "messages": [...]}` shape.
 
 Every strategy sets `metadata["original_count"]`; strategy-specific keys are documented per strategy below.
 
+### Pipeline Result Types
+
+These types are used internally by the composable pipeline and by category-specific strategy functions:
+
+```python
+@dataclass
+class SelectionResult:
+    kept: list[Message]
+    dropped: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class CompressionResult:
+    messages: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ValidationResult:
+    messages: list[Message]
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
 ## Strategies
 
-Each strategy is a `transform(messages: list[Message], **params) -> TransferResult` function registered in `STRATEGY_REGISTRY` (`src/llmigrate/strategies/__init__.py`), keyed by the strings below.
+Each strategy module exposes:
+- A `transform(messages, **params) -> MigrationResult` function for standalone use via `strategy=`.
+- A category-specific function for pipeline composition via `strategies=`: `select()` for selection, `compress()` for transformation, or `validate()` for validation.
 
 ### `raw`
 
-Identity transform. Returns the input unchanged, including its exact message list — not even role-alternation merging is applied (`transfer()` special-cases `raw` out of that step regardless of `enforce_alternation`).
+Identity transform. Returns the input unchanged, including its exact message list — not even role-alternation merging is applied (`migrate()` special-cases `raw` out of that step regardless of `enforce_alternation`).
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
@@ -159,6 +215,8 @@ Identity transform. Returns the input unchanged, including its exact message lis
 **When to use:** provider/protocol change only, no content transformation — e.g. moving between two deployments of the same model family where context size isn't a concern.
 
 ### `keep_last`
+
+**Category:** Selection.
 
 Turn-based truncation: keeps pinned content plus the last `n` turns, dropping everything older. A "turn" is a `USER` message plus everything up to (not including) the next `USER` message — see [Turn Grouping](#turn-grouping).
 
@@ -174,6 +232,8 @@ Turn-based truncation: keeps pinned content plus the last `n` turns, dropping ev
 **When to use:** capacity routing where a fixed number of recent exchanges is "enough" — e.g. tier-1→tier-2 escalation in a support bot, where only the last few turns are relevant to the immediate question.
 
 ### `token_budget`
+
+**Category:** Selection.
 
 Capacity-based truncation: keeps as many whole recent turns as fit within a token budget, instead of a fixed turn count.
 
@@ -191,36 +251,40 @@ Capacity-based truncation: keeps as many whole recent turns as fit within a toke
 
 ### `summarize`
 
-Compresses older history into one synthetic summary message, keeping the most recent `tail` turns verbatim (unlike other strategies, `tail` here counts individual messages taken from the end of `rest`, not turn-groups — see caveat below).
+**Category:** Transformation.
+
+Compresses dropped messages into one synthetic summary message. When used alone via `strategy="summarize"`, summarizes all non-pinned messages. When composed with a selection strategy via `strategies=`, summarizes only the messages the selection step dropped.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `tail` | `int` | `3` | Number of most recent non-pinned messages to keep verbatim after the summary. If `len(rest) <= tail`, the whole input is returned unchanged and no model call is made. |
 | `generate` | `Callable[[list[dict]], str] \| None` | `None` | If omitted, falls back to a truncation notice (`"[Prior conversation (N messages) omitted for brevity]"`) instead of an actual summary — no model call is made. |
 | `generate_kwargs` | `dict \| None` | `None` | Forwarded to `generate`. |
 | `max_summary_tokens` | `int \| None` | `None` | If set and the summary exceeds it, the summary text is hard-truncated (character-based, ~4 chars/token) and suffixed with `" [truncated]"`. |
+| `summarizer` | `Summarizer \| None` | `None` | Preferred over a bare `generate` for cost/latency accounting. See [Summarizers](#summarizers). |
 | `pin_first_user` | `bool` | `True` | See [Protected Content](#protected-content-pinning). |
 
-**Behavior:** splits pinned vs. rest. If `rest` already fits within `tail`, returns the input unchanged (`metadata["summarized"] = False`). Otherwise summarizes `rest[:-tail]` (or all of `rest` if `tail == 0`) via `generate`, or falls back to a truncation notice if `generate` is `None`. The summary is emitted as a single synthetic `USER` message (`metadata["llmigrate_synthetic"] = True`), followed by `rest[-tail:]` verbatim. Output is `pinned + [summary] + tail_msgs`.
+**Behavior (standalone — `strategy="summarize"`):** splits pinned vs. rest. Summarizes all of `rest` via `generate`, or falls back to a truncation notice if `generate` is `None`. The summary is emitted as a single synthetic `USER` message (`llmigrate["llmigrate_synthetic"] = True`). Output is `pinned + [summary]`.
 
-**Note:** `summarize`'s `tail` operates on raw messages, not turn-groups (unlike `keep_last`/`token_budget`/`summary_tail`'s tail) — it can split a turn if `tail` falls mid-turn. Use `summary_tail` instead when turn-aligned tails matter.
+**Behavior (composed — `strategies=["keep_last", "summarize"]`):** receives the `dropped` messages from the selection step. If nothing was dropped, the transformation step is skipped entirely (no model call). Otherwise summarizes the dropped messages. Output is `pinned + [summary] + kept`.
 
-**Metadata:** `original_count`, `summarized` (`bool`), `summarized_count` (messages fed to the summarizer), `tail`, `latency_ms` (only if `generate` was called), `summary_truncated` (only if truncation occurred).
+**Metadata:** `original_count` (standalone only), `summarized` (`bool`), `summarized_count` (messages fed to the summarizer), `latency_ms` (only if `generate`/`summarizer` was called), `summary_truncated` (only if truncation occurred). When a `Summarizer` is used: additionally `cost`, `model`, `token_usage` (if the `Summarizer` reports them).
 
-**When to use:** cost optimization handoffs where a cheaper model only needs the gist of the earlier conversation plus the live thread — e.g. moving from an expensive reasoning model to a cheap Q&A model once the hard part is solved.
+**When to use:** cost optimization handoffs where a cheaper model only needs the gist of the earlier conversation. Compose with a selection strategy to keep recent turns verbatim: `strategies=["keep_last", "summarize"]`.
 
-### `capsule`
+### `structured_state`
 
-Extracts a structured state capsule (objective, progress, key facts, ...) instead of a prose summary — designed for agent-to-agent handoff rather than continuing a chat.
+**Category:** Transformation.
+
+Extracts structured state (objective, progress, key facts, ...) instead of a prose summary — designed for agent-to-agent handoff rather than continuing a chat.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `generate` | `Callable[[list[dict]], str] \| None` | `None` | If omitted, falls back to a rule-based (non-model) heuristic extraction — not a stub; see below. |
 | `generate_kwargs` | `dict \| None` | `None` | Forwarded to `generate`. |
-| `schema` | `dict[str, str]` | `DEFAULT_CAPSULE_SCHEMA` (see below) | Maps field name → a natural-language description of what that field should contain. Field order is preserved in the output. |
+| `schema` | `dict[str, str]` | `DEFAULT_STATE_SCHEMA` (see below) | Maps field name → a natural-language description of what that field should contain. Field order is preserved in the output. |
 | `pin_first_user` | `bool` | `True` | See [Protected Content](#protected-content-pinning). |
 
-Default schema (`llmigrate.strategies.capsule.DEFAULT_CAPSULE_SCHEMA`):
+Default schema (`llmigrate.strategies.structured_state.DEFAULT_STATE_SCHEMA`):
 
 ```python
 {
@@ -232,13 +296,15 @@ Default schema (`llmigrate.strategies.capsule.DEFAULT_CAPSULE_SCHEMA`):
 }
 ```
 
-**Behavior:** splits pinned vs. rest. With `generate`, prompts it to produce a response using `## <field name>` headings matching `schema`'s keys, on the non-pinned messages. Without `generate`, runs a rule-based heuristic instead: `objective` = the pinned task (or first user message); `completed` = a digest of all-but-the-last assistant message; `observations` = the last assistant message (truncated); `open_questions` = the last user message if it looks like a question; `next_steps` = a fixed placeholder. Either way, the response text is parsed back into `metadata["capsule_data"]` (`dict[str, str]`) by matching `## <field>` headings — the same parser handles both the model and heuristic paths since both use the heading format. The capsule is emitted as a single synthetic `USER` message. Output is `pinned + [capsule_msg]` — **all other non-pinned history is dropped**, unlike `summarize`/`summary_tail`, which keep a verbatim tail.
+**Behavior:** splits pinned vs. rest. With `generate`, prompts it to produce a response using `## <field name>` headings matching `schema`'s keys, on the non-pinned messages. Without `generate`, runs a rule-based heuristic instead: `objective` = the pinned task (or first user message); `completed` = a digest of all-but-the-last assistant message; `observations` = the last assistant message (truncated); `open_questions` = the last user message if it looks like a question; `next_steps` = a fixed placeholder. Either way, the response text is parsed back into `metadata["state_data"]` (`dict[str, str]`) by matching `## <field>` headings — the same parser handles both the model and heuristic paths since both use the heading format. The structured state is emitted as a single synthetic `USER` message. Output is `pinned + [state_msg]` — **all other non-pinned history is dropped**. Compose with a selection strategy to keep a verbatim tail.
 
-**Metadata:** `original_count`, `schema_fields` (list of keys), `capsule_data` (parsed `dict[str, str]`), `latency_ms` (only if `generate` was called).
+**Metadata:** `original_count` (standalone only), `schema_fields` (list of keys), `state_data` (parsed `dict[str, str]`), `latency_ms` (only if `generate` was called).
 
 **When to use:** multi-agent handoff, e.g. a research agent passing structured findings to a writing agent, where the receiving agent needs organized state rather than a linear transcript.
 
 ### `audit`
+
+**Category:** Validation.
 
 Appends a verification instruction for the receiving model, without removing or rewriting any existing content.
 
@@ -259,15 +325,17 @@ Then proceed with addressing the user's request.
 
 where `{source_clause}` is `" that was started with a different model ({source_model})"` if `source_model` is given, else `" that was started with a different model"`.
 
-**Behavior:** appends one synthetic `USER` message (`metadata = {"llmigrate_synthetic": True, "audit_instruction": True}`) to the (unmodified) input. Does not call `split_pinned()` — nothing is dropped or rewritten, so there is nothing to protect.
+**Behavior:** appends one synthetic `USER` message (`llmigrate = {"llmigrate_synthetic": True, "audit_instruction": True}`) to the (unmodified) input. Does not call `split_pinned()` — nothing is dropped or rewritten, so there is nothing to protect.
 
-**Metadata:** `original_count`, `source_model` (if given), `target_model` (if given).
+**Metadata:** `original_count` (standalone only), `source_model` (if given), `target_model` (if given).
 
 **When to use:** model fallback/failover, where you want the new model to double-check assumptions made by the model that started the conversation before continuing — e.g. after a provider outage forces an unplanned mid-conversation switch.
 
 ### `selective_history`
 
-Chooses a **verbatim** subset of events that fits a token budget, ranked by a pluggable [`Selector`](#selectors) — never rewrites content, unlike `summarize`/`capsule`/`summary_tail`.
+**Category:** Selection.
+
+Chooses a **verbatim** subset of events that fits a token budget, ranked by a pluggable [`Selector`](#selectors) — never rewrites content, unlike `summarize`/`structured_state`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
@@ -286,36 +354,42 @@ Chooses a **verbatim** subset of events that fits a token budget, ranked by a pl
 
 **Limitation:** operates at message granularity — it does not guarantee `TOOL_CALL`/`TOOL_RESULT` pairing the way turn-based strategies do. Put both categories in `always_keep` if pairing matters.
 
-**Metadata:** `original_count`, `selected_event_ids` / `dropped_event_ids` (0-indexed positions in the *input* list, sorted ascending), `original_tokens`, `transferred_tokens`, `selector` (its `repr()`), `scores` (`dict[int, float]` mapping input index → score, for scored/candidate messages only — pinned and mandatorily-forced-but-not-scored messages are absent).
+**Metadata:** `original_count` (standalone only), `selected_event_ids` / `dropped_event_ids` (0-indexed positions in the *input* list, sorted ascending), `original_tokens`, `transferred_tokens`, `selector` (its `repr()`), `scores` (`dict[int, float]` mapping input index → score, for scored/candidate messages only — pinned and mandatorily-forced-but-not-scored messages are absent).
 
 **When to use:** long agentic sessions where recency isn't the right retention signal — e.g. keeping every tool result (`always_keep={"tool_result"}`) while ranking assistant chatter by a `PrioritySelector`, or ranking by embedding similarity to the current task with a `RelevanceSelector`.
 
-### `summary_tail`
+## Strategy Composition
 
-Combines a summarized prefix with a verbatim, turn-aligned tail — the generalization of `summarize` with independently sized, budget-driven prefix/tail and pluggable cost/latency accounting.
+Strategies can be composed via `strategies=` to combine concerns:
 
-| Parameter | Type | Default | Notes |
-|---|---|---|---|
-| `total_budget` | `int` | required | Raises `ValueError` if not provided. |
-| `summary_budget` | `int` | required | Token budget for the summary text. Raises `ValueError` if not provided or negative. |
-| `tail_budget` | `int \| None` | `total_budget - summary_budget` | Token budget for the verbatim tail. Raises `ValueError` if negative, or if `summary_budget + tail_budget > total_budget`. |
-| `summarizer` | `Summarizer \| None` | `None` | Preferred over `generate` if both given. See [Summarizers](#summarizers). |
-| `generate` | `Callable[[list[dict]], str] \| None` | `None` | Used (auto-wrapped in `GenerateSummarizer`) if `summarizer` is not given. One of `summarizer`/`generate` is required *only if* the (non-pinned) history doesn't already fit `tail_budget` — see below. |
-| `generate_kwargs` | `dict \| None` | `None` | Forwarded when auto-wrapping a bare `generate`. |
-| `pin_first_user` | `bool` | `True` | See [Protected Content](#protected-content-pinning). |
-| `tokenizer` | `Callable[[str], int] \| None` | `default_tokenizer(target_model)` | See [Token Estimation](#token-estimation). |
-| `target_model` | `str \| None` | `None` | Used to select a default tokenizer (does **not** auto-size `total_budget`, unlike `token_budget`). |
+```python
+# Selection + transformation: keep last 2 turns, summarize the rest
+migrate(messages, strategies=["keep_last", "summarize"], n=2, generate=fn)
 
-**Behavior:**
-1. Splits pinned vs. rest, groups `rest` into turns.
-2. Greedily accumulates whole turns from the end into the tail while they fit `tail_budget`.
-3. Whatever precedes the tail (`prefix_msgs`) is summarized — but **only if `prefix_msgs` is non-empty**. If the whole (non-pinned) history already fits in `tail_budget`, `prefix_msgs` is empty and **no summarizer/`generate` call is made at all** (so `summarizer`/`generate` become optional in that case).
-4. If a summary is produced and exceeds `summary_budget`, it's hard-truncated (~4 chars/token) with `" [truncated]"` appended, and `metadata["summary_truncated"] = True`.
-5. Tail messages are re-emitted with `metadata["segment"] = "verbatim_tail"` added (preserving existing metadata); the summary message carries `metadata["segment"] = "summary_prefix"`. Output is `pinned + [summary?] + tagged_tail`.
+# Selection + validation: keep within budget, append audit
+migrate(messages, strategies=["token_budget", "audit"], max_tokens=4096)
 
-**Metadata:** `original_count`, `prefix_event_ids` / `tail_event_ids` (0-indexed input positions), `summary_tokens`, `tail_tokens`, `total_transferred_tokens`, `summarizer` (its `repr()`, or `None` if no summarization occurred), `summary_truncated` (only if truncated), and — only if a summarizer call was made — `latency_ms`, `token_usage` (a `TokenUsage`), `cost`, `model` (the latter two only if the `Summarizer` implementation reports them; a bare `generate` reports `None` for both).
+# All three: select, summarize dropped, audit the result
+migrate(messages, strategies=["keep_last", "summarize", "audit"], n=3, generate=fn)
 
-**When to use:** context-window management with finer control than `token_budget` alone — e.g. guaranteeing a minimum verbatim tail size regardless of how much history precedes it, while still tracking summarization cost/latency for observability.
+# Order doesn't matter — the library sorts internally
+migrate(messages, strategies=["audit", "summarize", "keep_last"], n=3, generate=fn)
+```
+
+**Execution order** is always: selection → transformation → validation, regardless of the order passed to `strategies=`.
+
+**Pipeline execution:**
+1. **Pinning**: `split_pinned(messages)` → `(pinned, rest)` — done once, centrally.
+2. **Selection** (if any): `select(rest, ...)` → `SelectionResult(kept, dropped)`. If no selection strategy: `kept = []`, `dropped = rest`.
+3. **Transformation** (if any): `compress(dropped, ...)` → `CompressionResult(messages)`. Skipped if `dropped` is empty (nothing to compress). If no transformation strategy: dropped content is silently discarded.
+4. **Assembly**: `pinned + transformed + kept`.
+5. **Validation** (if any): `validate(assembled, ...)` → `ValidationResult(messages)`.
+6. **Alternation enforcement** (unless `raw`).
+7. **Format conversion** to wire-format dicts.
+
+**Metadata namespacing**: when using `strategies=`, metadata from each step is stored under `"selection"`, `"transformation"`, and `"validation"` keys. When using `strategy=` (single), metadata is flat.
+
+**Constraints**: at most one strategy per category. `"raw"` cannot be combined with other strategies.
 
 ## Protected Content (pinning)
 
@@ -324,18 +398,18 @@ Combines a summarized prefix with a verbatim, turn-aligned tail — the generali
 Every strategy that can drop or rewrite content calls `split_pinned()` instead of implementing its own filtering. A message is pinned if **any** of the following hold:
 
 - its role is `SYSTEM`;
-- it carries `metadata["pinned"] = True` (works regardless of role or position — the escape hatch for protecting arbitrary messages, e.g. a prior transfer's capsule);
+- it carries `metadata["pinned"] = True` (works regardless of role or position — the escape hatch for protecting arbitrary messages, e.g. a prior migration's structured state);
 - it is the **first** `USER` message in the list, and `pin_first_user` is `True` (the default).
 
-Pinned messages are always emitted verbatim, in their original order, and are never truncated, summarized, or dropped by any strategy. `raw` and `audit` don't call `split_pinned()` at all, since neither drops nor rewrites content in the first place.
+Pinned messages are always emitted verbatim, in their original order, and are never truncated, summarized, or dropped by any strategy. `raw` and `audit` don't call `split_pinned()` at all, since neither drops nor rewrites content in the first place. In the pipeline (`strategies=`), pinning is done once centrally before any step executes.
 
-Disable first-user pinning per call with `pin_first_user=False`; this is forwarded through `transfer(**params)` like any other strategy parameter.
+Disable first-user pinning per call with `pin_first_user=False`; this is forwarded through `migrate(**params)` like any other strategy parameter.
 
-This is the mechanism that keeps a SWE-bench-style task description alive through `keep_last(n=0)`, an aggressive `token_budget`, or a `summarize`/`capsule` call that would otherwise paraphrase it away. It is verified by a registry-wide parametrized test (`tests/test_pinning.py::test_preserves_task_marker`) that runs every strategy under deliberately tight parameters.
+This is the mechanism that keeps a SWE-bench-style task description alive through `keep_last(n=0)`, an aggressive `token_budget`, or a `summarize`/`structured_state` call that would otherwise paraphrase it away. It is verified by a registry-wide parametrized test (`tests/test_pinning.py::test_preserves_task_marker`) that runs every strategy under deliberately tight parameters.
 
 ## Role Alternation
 
-`src/llmigrate/alternation.py` — `enforce_alternation(messages) -> list[Message]`, applied by `transfer()` itself (not by individual strategies) whenever `enforce_alternation=True` (the default) and `strategy != "raw"`.
+`src/llmigrate/alternation.py` — `enforce_alternation(messages) -> list[Message]`, applied by `migrate()` itself (not by individual strategies) whenever `enforce_alternation=True` (the default) and the strategy is not `raw`.
 
 Merges consecutive messages that share the same non-`SYSTEM` role into a single message: content is joined with `"\n\n"`, metadata is merged (later message's keys win on conflict), and `metadata["llmigrate_synthetic"]` is set on the merged message if either side had it set.
 
@@ -345,7 +419,7 @@ This exists because pinning can incidentally produce non-alternating output — 
 
 `src/llmigrate/turns.py` — `group_into_turns(messages) -> list[list[Message]]`.
 
-A turn starts at a `USER` message and includes everything up to (not including) the next `USER` message — so an assistant reply plus any interleaved `TOOL_CALL`/`TOOL_RESULT` messages stay together. A leading run of non-`USER` messages (if any) forms its own group. Used by `keep_last`, `token_budget`, and `summary_tail`'s tail so truncation never splits a turn or orphans a `TOOL_RESULT` from its `TOOL_CALL`. Not used by `summarize` (whose `tail` is message-count-based — see its caveat) or `selective_history` (message-granularity by design).
+A turn starts at a `USER` message and includes everything up to (not including) the next `USER` message — so an assistant reply plus any interleaved `TOOL_CALL`/`TOOL_RESULT` messages stay together. A leading run of non-`USER` messages (if any) forms its own group. Used by `keep_last` and `token_budget` so truncation never splits a turn or orphans a `TOOL_RESULT` from its `TOOL_CALL`. Not used by `selective_history` (message-granularity by design).
 
 ## Selectors
 
@@ -398,7 +472,7 @@ selector = RelevanceSelector(embed=my_embed_fn, query="fix the failing test")
 
 ## Summarizers
 
-`src/llmigrate/summarizers.py` — pluggable summarization with cost/latency accounting, used by `summary_tail`'s `summarizer` parameter (and available generally — `summarize` reports `latency_ms` but does not accept a `Summarizer`, only a bare `generate`).
+`src/llmigrate/summarizers.py` — pluggable summarization with cost/latency accounting, used by `summarize`'s `summarizer` parameter.
 
 ```python
 @dataclass
@@ -430,7 +504,7 @@ Wraps a plain `generate` callable (sync or async, dispatched via `_util.call_gen
 
 ### `as_summarizer(summarizer, generate_kwargs=None) -> Summarizer`
 
-Used internally by `summary_tail`: returns `summarizer` unchanged if it already has a `.summarize()` method, otherwise wraps it (a bare `generate` callable) in `GenerateSummarizer`. Raises `ValueError` if `summarizer` is `None` (i.e. neither `summarizer` nor `generate` was supplied) — except that `summary_tail` only calls this when there's actually a prefix to summarize, so omitting both is valid whenever the tail alone covers the whole history.
+Returns `summarizer` unchanged if it already has a `.summarize()` method, otherwise wraps it (a bare `generate` callable) in `GenerateSummarizer`. Raises `ValueError` if `summarizer` is `None`.
 
 ## Token Estimation
 
@@ -465,19 +539,18 @@ llmigrate.register_model_context_window("my-finetuned-llama", 32_768)
 
 ## `generate()` Callables
 
-Model-assisted strategies (`summarize`, `capsule`, `summary_tail`) accept a `generate` callable with signature `Callable[[list[dict]], str]` (sync or async — auto-detected via `inspect.iscoroutinefunction` and dispatched by `_util.call_generate`). This is the mechanism that keeps llmigrate decoupled from any specific provider SDK: `generate` receives the OpenAI-style message list llmigrate builds internally for the summarization/extraction prompt, and returns the completion text.
+Model-assisted strategies (`summarize`, `structured_state`) accept a `generate` callable with signature `Callable[[list[dict]], str]` (sync or async — auto-detected via `inspect.iscoroutinefunction` and dispatched by `_util.call_generate`). This is the mechanism that keeps llmigrate decoupled from any specific provider SDK: `generate` receives the OpenAI-style message list llmigrate builds internally for the summarization/extraction prompt, and returns the completion text.
 
 ```python
-result = llmigrate.transfer(
+result = llmigrate.migrate(
     messages,
     strategy="summarize",
     generate=my_generate_fn,       # Callable[[list[dict]], str], sync or async
     generate_kwargs={"temperature": 0.2},
-    tail=3,
 )
 ```
 
-Calling an async `generate` from inside an already-running event loop raises `RuntimeError` (`asyncio.run` cannot be nested) — call `transfer()` from synchronous code, or drive it via `asyncio.to_thread`/an executor if you're already inside an event loop.
+Calling an async `generate` from inside an already-running event loop raises `RuntimeError` (`asyncio.run` cannot be nested) — call `migrate()` from synchronous code, or drive it via `asyncio.to_thread`/an executor if you're already inside an event loop.
 
 ### `generators.py` — OpenAI-compatible builders
 
@@ -501,7 +574,7 @@ async_openai_compatible_generate(
 ) -> Callable[..., Awaitable[str]]
 ```
 
-`default_kwargs` (e.g. `temperature`) apply to every call and are overridden per-call by `transfer()`'s `generate_kwargs`. Pass `client` to inject an already-configured (or fake/test) `OpenAI`/`AsyncOpenAI`-compatible client instead of constructing one from `base_url`/`api_key`.
+`default_kwargs` (e.g. `temperature`) apply to every call and are overridden per-call by `migrate()`'s `generate_kwargs`. Pass `client` to inject an already-configured (or fake/test) `OpenAI`/`AsyncOpenAI`-compatible client instead of constructing one from `base_url`/`api_key`.
 
 ```python
 from llmigrate.generators import openai_compatible_generate
@@ -510,12 +583,12 @@ generate = openai_compatible_generate(
     base_url="http://localhost:8000/v1",  # e.g. a local vLLM server
     model="meta-llama/Llama-3-70b-instruct",
 )
-result = llmigrate.transfer(messages, strategy="summarize", generate=generate)
+result = llmigrate.migrate(messages, strategy="summarize", generate=generate)
 ```
 
 ## Format Adapters
 
-`src/llmigrate/adapters/` — convert between provider-native formats and canonical `Message`s. `transfer()` calls `auto_convert()` before dispatching to a strategy; you generally don't need to call adapters directly except via `TransferResult.to_openai()`/`.to_anthropic()`.
+`src/llmigrate/adapters/` — convert between provider-native formats and canonical `Message`s. `migrate()` calls `auto_convert()` on input and converts back to wire format on output via `to_openai()` or `to_anthropic()`, controlled by `target_format`.
 
 ### Auto-detection (`adapters/detect.py`)
 
@@ -541,7 +614,7 @@ Role mapping: `system`/`developer → SYSTEM`, `user → USER`, `assistant → A
 
 ## Errors & Validation
 
-Summary of every validation error surfaced by `transfer()` or a strategy's `transform()`:
+Summary of every validation error surfaced by `migrate()` or a strategy's `transform()`:
 
 | Condition | Exception |
 |---|---|
@@ -552,19 +625,23 @@ Summary of every validation error surfaced by `transfer()` or a strategy's `tran
 | unrecognized OpenAI `role` string | `ValueError` (from `from_openai`) |
 | unsupported first-element type during format detection | `TypeError` (from `auto_convert`) |
 | unknown `strategy` name | `ValueError`, message lists available strategies |
+| unknown strategy name in `strategies` list | `ValueError` |
+| both `strategy` and `strategies` specified | `ValueError` |
+| more than one strategy from the same category in `strategies` | `ValueError` |
+| `"raw"` combined with other strategies in `strategies` | `ValueError` |
+| unknown `target_format` | `ValueError` |
 | `keep_last`: `n < 0` | `ValueError` |
 | `token_budget`: `max_tokens <= 0` | `ValueError` |
 | `selective_history`: missing `budget` or `budget < 0` | `ValueError` |
 | `selective_history`: missing `selector` | `ValueError` |
-| `summary_tail`: missing `total_budget` or `summary_budget` | `ValueError` |
-| `summary_tail`: `summary_budget < 0` or `tail_budget < 0` | `ValueError` |
-| `summary_tail`: `summary_budget + tail_budget > total_budget` | `ValueError` |
-| `summary_tail`: prefix needs summarizing but neither `summarizer` nor `generate` given | `ValueError` (from `as_summarizer`) |
 | async `generate` called from within a running event loop | `RuntimeError` |
 
 ## Adding a New Strategy
 
-1. Create a new module in `src/llmigrate/strategies/` with a `transform(messages: list[Message], **params) -> TransferResult` function.
-2. If the strategy can drop or rewrite content, call `pinning.split_pinned()` at the top and never touch the pinned half.
-3. Register it in `strategies/__init__.py` by adding to `STRATEGY_REGISTRY`, and add a corresponding `Strategy` enum value in `types.py`.
-4. Add tests, including a `TIGHT_PARAMS` entry in `tests/test_pinning.py` so the registry-wide invariant tests cover it.
+1. Create a new module in `src/llmigrate/strategies/` with:
+   - A `transform(messages: list[Message], **params) -> MigrationResult` function for standalone use.
+   - A category-specific function: `select()` for selection, `compress()` for transformation, or `validate()` for validation.
+2. If the strategy can drop or rewrite content, call `pinning.split_pinned()` at the top of `transform()` and never touch the pinned half. The pipeline handles pinning centrally for the category-specific functions.
+3. Register it in `strategies/__init__.py`: add to `STRATEGY_REGISTRY`, `STRATEGY_CATEGORIES`, and the appropriate category registry (`SELECT_REGISTRY`, `COMPRESS_REGISTRY`, or `VALIDATE_REGISTRY`).
+4. Add a `Strategy` enum value in `types.py`.
+5. Add tests, including a `TIGHT_PARAMS` entry in `tests/test_pinning.py` so the registry-wide invariant tests cover it.

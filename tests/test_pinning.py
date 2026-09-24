@@ -34,22 +34,16 @@ TIGHT_PARAMS: dict[str, dict] = {
     "raw": {},
     "keep_last": {"n": 0},
     "token_budget": {"max_tokens": 1},
-    "summarize": {"tail": 0, "generate": _mock_generate},
-    "capsule": {},
+    "summarize": {"generate": _mock_generate},
+    "structured_state": {},
     "audit": {},
     "selective_history": {"budget": 0, "selector": PrioritySelector({})},
-    "summary_tail": {
-        "total_budget": 1,
-        "summary_budget": 1,
-        "tail_budget": 0,
-        "generate": _mock_generate,
-    },
 }
 
 
 @pytest.mark.parametrize("strategy", sorted(STRATEGY_REGISTRY.keys()))
 def test_preserves_task_marker(strategy):
-    result = llmigrate.transfer(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
+    result = llmigrate.migrate(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
     assert any(MARKER in m["content"] for m in result.messages), (
         f"{strategy} dropped or diluted the pinned task content"
     )
@@ -57,7 +51,7 @@ def test_preserves_task_marker(strategy):
 
 @pytest.mark.parametrize("strategy", sorted(s for s in STRATEGY_REGISTRY if s != "raw"))
 def test_no_consecutive_same_role_output(strategy):
-    result = llmigrate.transfer(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
+    result = llmigrate.migrate(FIXTURE, strategy=strategy, **TIGHT_PARAMS[strategy])
     roles = [m["role"] for m in result.messages if m["role"] != "system"]
     for a, b in zip(roles, roles[1:]):
         assert a != b, f"{strategy} produced consecutive {a} messages"

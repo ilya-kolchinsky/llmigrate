@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from llmigrate.types import Message, Role, Strategy, TransferResult
+from llmigrate.types import Message, MigrationResult, Role, Strategy, ValidationResult
 
 DEFAULT_AUDIT_INSTRUCTION_TEMPLATE = (
     "You are continuing a conversation{source_clause}. "
@@ -14,7 +14,7 @@ DEFAULT_AUDIT_INSTRUCTION_TEMPLATE = (
 )
 
 
-def transform(messages: list[Message], **params: Any) -> TransferResult:
+def validate(messages: list[Message], **params: Any) -> ValidationResult:
     source_model: str | None = params.get("source_model")
     target_model: str | None = params.get("target_model")
 
@@ -28,23 +28,29 @@ def transform(messages: list[Message], **params: Any) -> TransferResult:
         )
         instruction = DEFAULT_AUDIT_INSTRUCTION_TEMPLATE.format(source_clause=source_clause)
 
-    result_messages = list(messages)
-
     audit_msg = Message(
         role=Role.USER,
         content=instruction,
         metadata={"llmigrate_synthetic": True, "audit_instruction": True},
     )
-    result_messages.append(audit_msg)
 
-    metadata: dict[str, Any] = {"original_count": len(messages)}
+    metadata: dict[str, Any] = {}
     if source_model:
         metadata["source_model"] = source_model
     if target_model:
         metadata["target_model"] = target_model
 
-    return TransferResult(
-        messages=result_messages,
-        strategy=Strategy.AUDIT,
+    return ValidationResult(
+        messages=list(messages) + [audit_msg],
         metadata=metadata,
+    )
+
+
+def transform(messages: list[Message], **params: Any) -> MigrationResult:
+    result = validate(messages, **params)
+
+    return MigrationResult(
+        messages=result.messages,
+        strategies=[Strategy.AUDIT],
+        metadata={"original_count": len(messages), **result.metadata},
     )

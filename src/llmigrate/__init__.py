@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -14,42 +15,58 @@ from llmigrate.adapters.openai import to_openai as _to_openai
 from llmigrate.alternation import enforce_alternation as _enforce_alternation
 from llmigrate.generators import async_openai_compatible_generate, openai_compatible_generate
 from llmigrate.models import register_model_context_window
+from llmigrate.pinning import split_pinned
 from llmigrate.selectors import PrioritySelector, RelevanceSelector, Selector
-from llmigrate.strategies import STRATEGY_REGISTRY
+from llmigrate.strategies import (
+    COMPRESS_REGISTRY,
+    SELECT_REGISTRY,
+    STRATEGY_CATEGORIES,
+    STRATEGY_REGISTRY,
+    VALIDATE_REGISTRY,
+)
 from llmigrate.summarizers import GenerateSummarizer, Summarizer, SummarizerResult, TokenUsage
-from llmigrate.types import Message, Role, Strategy, TransferResult
+from llmigrate.tokens import default_tokenizer, estimate_tokens
+from llmigrate.types import (
+    CompressionResult,
+    Message,
+    MigrationResult,
+    Role,
+    SelectionResult,
+    Strategy,
+    StrategyCategory,
+    ValidationResult,
+)
 
 __all__ = [
+    "ValidationResult",
     "GenerateSummarizer",
     "Message",
     "PrioritySelector",
     "RelevanceSelector",
     "Role",
+    "SelectionResult",
     "Selector",
     "Strategy",
+    "StrategyCategory",
     "Summarizer",
     "SummarizerResult",
     "TokenUsage",
-    "TransferResult",
+    "MigrationResult",
+    "CompressionResult",
     "async_openai_compatible_generate",
     "openai_compatible_generate",
     "register_model_context_window",
-    "transfer",
+    "migrate",
 ]
-
-# Strategies whose contract is "pass through unchanged" — alternation
-# enforcement is skipped for them so it can't mask input issues or violate
-# the strategy's own spec.
-_NO_ALTERNATION_ENFORCEMENT = {"raw"}
-
 
 _VALID_FORMATS = {_OPENAI, _ANTHROPIC}
 
 
-def transfer(
+def migrate(
     messages: list[dict[str, Any]] | list[Message],
-    strategy: str = "raw",
+    strategy: str | None = None,
     *,
+    strategies: list[str] | None = None,
     generate: Callable[..., str] | None = None,
     generate_kwargs: dict[str, Any] | None = None,
     source_model: str | None = None,
@@ -57,40 +74,8 @@ def transfer(
     target_format: str | None = None,
     enforce_alternation: bool = True,
     **params: Any,
-) -> TransferResult:
-    """Transfer a conversation session using the specified strategy.
-
-    Args:
-        messages: Conversation history in any supported format (OpenAI-format
-                  or Anthropic-format dicts, or canonical Message objects).
-        strategy: Migration strategy name (raw, keep_last, token_budget,
-                  summarize, capsule, audit, selective_history, summary_tail).
-        generate: Callable for model-assisted strategies. Signature:
-                  (messages: list[dict]) -> str. May be async.
-        generate_kwargs: Extra kwargs (e.g. temperature) forwarded to `generate`
-                  on every call, kept separate from strategy params.
-        source_model: Optional model name the conversation started on. Recorded
-                  in metadata; used by `audit` to customize its instruction.
-        target_model: Optional model name the conversation is moving to. Used
-                  by `token_budget`/`summary_tail`/`selective_history` to
-                  size defaults from a built-in context-window table, and
-                  recorded in metadata.
-        target_format: Wire format for the output messages (``"openai"`` or
-                  ``"anthropic"``). When omitted, defaults to the detected
-                  format of the input (or ``"openai"`` if canonical Message
-                  objects are passed).
-        enforce_alternation: Merge consecutive same-role messages in the output
-                  (default True) so results are safe for providers that reject
-                  non-alternating turns (e.g. Anthropic). Skipped for `raw`.
-        **params: Strategy-specific parameters (e.g. n=5 for keep_last).
-
-    Returns:
-        TransferResult with transformed messages as wire-format dicts,
-        ready to pass directly to the target provider's API.
-    """
-    if strategy not in STRATEGY_REGISTRY:
-        available = ", ".join(sorted(STRATEGY_REGISTRY.keys()))
-        raise ValueError(f"Unknown strategy: {strategy!r}. Available: {available}")
+) -> MigrationResult:
+    resolved = _resolve_strategies(strategy, strategies)
 
     _validate_messages_input(messages)
 
@@ -112,20 +97,25 @@ def transfer(
     if target_model is not None:
         params["target_model"] = target_model
 
-    transform_fn = STRATEGY_REGISTRY[strategy]
-    result = cast(TransferResult, transform_fn(canonical, **params))  # type: ignore[operator]
+    if not resolved:
+        transform_fn = STRATEGY_REGISTRY["raw"]
+        result = cast(MigrationResult, transform_fn(canonical, **params))  # type: ignore[operator]
+    elif strategy is not None:
+        transform_fn = STRATEGY_REGISTRY[resolved[0]]
+        result = cast(MigrationResult, transform_fn(canonical, **params))  # type: ignore[operator]
+    else:
+        result = _execute_pipeline(canonical, resolved, params)
 
     if source_model is not None:
         result.metadata.setdefault("source_model", source_model)
     if target_model is not None:
         result.metadata.setdefault("target_model", target_model)
 
-    if enforce_alternation and strategy not in _NO_ALTERNATION_ENFORCEMENT:
+    if enforce_alternation and resolved:
         result.messages = _enforce_alternation(
             cast(list[Message], result.messages)
         )
 
-    # Convert to wire format
     canonical_out = cast(list[Message], result.messages)
     if resolved_format == _ANTHROPIC:
         anthropic_out = _to_anthropic(canonical_out, include_metadata=True)
@@ -137,6 +127,120 @@ def transfer(
     result.format = resolved_format
 
     return result
+
+
+def _resolve_strategies(
+    strategy: str | None, strategies: list[str] | None
+) -> list[str]:
+    if strategy is not None and strategies is not None:
+        raise ValueError("Cannot specify both 'strategy' and 'strategies'")
+
+    if strategy is not None:
+        if strategy == "raw":
+            return []
+        if strategy not in STRATEGY_REGISTRY:
+            available = ", ".join(sorted(STRATEGY_REGISTRY.keys()))
+            raise ValueError(f"Unknown strategy: {strategy!r}. Available: {available}")
+        return [strategy]
+
+    if strategies is not None:
+        all_known = set(STRATEGY_REGISTRY.keys())
+        for s in strategies:
+            if s not in all_known:
+                available = ", ".join(sorted(all_known - {"raw"}))
+                raise ValueError(f"Unknown strategy: {s!r}. Available: {available}")
+        if "raw" in strategies:
+            if len(strategies) > 1:
+                raise ValueError("'raw' cannot be combined with other strategies")
+            return []
+        _validate_composition(strategies)
+        return list(strategies)
+
+    return []
+
+
+def _validate_composition(strategies: list[str]) -> None:
+    category_counts: Counter[StrategyCategory] = Counter()
+    for s in strategies:
+        cat = STRATEGY_CATEGORIES.get(s)
+        if cat is not None:
+            category_counts[cat] += 1
+
+    for cat, count in category_counts.items():
+        if count > 1:
+            offenders = [s for s in strategies if STRATEGY_CATEGORIES.get(s) == cat]
+            raise ValueError(
+                f"At most one {cat.value} strategy allowed, got: {offenders}"
+            )
+
+
+def _execute_pipeline(
+    canonical: list[Message],
+    strategy_names: list[str],
+    params: dict[str, Any],
+) -> MigrationResult:
+    pin_first_user: bool = params.get("pin_first_user", True)
+    pinned, rest = split_pinned(canonical, pin_first_user=pin_first_user)
+
+    by_category: dict[StrategyCategory, str] = {}
+    for s in strategy_names:
+        cat = STRATEGY_CATEGORIES[s]
+        by_category[cat] = s
+
+    applied: list[Strategy] = []
+    metadata: dict[str, Any] = {"original_count": len(canonical)}
+
+    selection_name = by_category.get(StrategyCategory.SELECTION)
+    if selection_name:
+        select_fn = SELECT_REGISTRY[selection_name]
+        tokenizer = params.get("tokenizer") or default_tokenizer(params.get("target_model"))
+        pinned_tokens = sum(estimate_tokens(m.content, tokenizer) for m in pinned)
+        sel_result = cast(
+            SelectionResult,
+            select_fn(rest, _pinned_tokens=pinned_tokens, **params),  # type: ignore[operator]
+        )
+        kept = sel_result.kept
+        dropped = sel_result.dropped
+        applied.append(Strategy(selection_name))
+        metadata["selection"] = sel_result.metadata
+    else:
+        kept = []
+        dropped = list(rest)
+
+    transform_name = by_category.get(StrategyCategory.TRANSFORMATION)
+    if transform_name:
+        compress_fn = COMPRESS_REGISTRY[transform_name]
+        compress_params = dict(params)
+        if transform_name == "structured_state":
+            compress_params["_pinned"] = pinned
+        transformed = cast(
+            CompressionResult,
+            compress_fn(dropped, **compress_params),  # type: ignore[operator]
+        )
+        transform_msgs = transformed.messages
+        applied.append(Strategy(transform_name))
+        metadata["transformation"] = transformed.metadata
+    else:
+        transform_msgs = []
+
+    assembled = pinned + transform_msgs + kept
+
+    validate_name = by_category.get(StrategyCategory.VALIDATION)
+    if validate_name:
+        validate_fn = VALIDATE_REGISTRY[validate_name]
+        validated = cast(
+            ValidationResult,
+            validate_fn(assembled, **params),  # type: ignore[operator]
+        )
+        assembled = validated.messages
+        applied.append(Strategy(validate_name))
+        metadata["validation"] = validated.metadata
+
+    return MigrationResult(
+        messages=assembled,
+        strategies=applied,
+        metadata=metadata,
+    )
 
 
 def _validate_messages_input(messages: Any) -> None:

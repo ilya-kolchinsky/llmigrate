@@ -1,4 +1,4 @@
-"""Capsule strategy — extract structured state from conversation history."""
+"""Structured state strategy — extract structured state from conversation history."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import Any
 
 from llmigrate._util import call_generate
 from llmigrate.pinning import split_pinned
-from llmigrate.types import Message, Role, Strategy, TransferResult
+from llmigrate.types import CompressionResult, Message, MigrationResult, Role, Strategy
 
-DEFAULT_CAPSULE_SCHEMA = {
+DEFAULT_STATE_SCHEMA = {
     "objective": "The main goal or task being worked on",
     "completed": "What has been accomplished so far",
     "observations": "Key facts, findings, or constraints discovered",
@@ -22,60 +22,58 @@ DEFAULT_CAPSULE_SCHEMA = {
 _HEADING_RE = re.compile(r"^##\s*(.+?)\s*$", re.MULTILINE)
 
 
-def transform(messages: list[Message], **params: Any) -> TransferResult:
+def compress(dropped: list[Message], **params: Any) -> CompressionResult:
     generate: Callable[..., str] | None = params.get("generate")
     generate_kwargs: dict[str, Any] = params.get("generate_kwargs") or {}
-    schema: dict[str, str] = params.get("schema", DEFAULT_CAPSULE_SCHEMA)
-    pin_first_user: bool = params.get("pin_first_user", True)
-
-    pinned, rest = split_pinned(messages, pin_first_user=pin_first_user)
+    schema: dict[str, str] = params.get("schema", DEFAULT_STATE_SCHEMA)
+    pinned: list[Message] = params.get("_pinned", [])
 
     latency_ms: float | None = None
     if generate is None:
-        # Fallback: heuristic extraction
-        capsule_text = _heuristic_capsule(pinned, rest, schema)
+        state_text = _heuristic_state(pinned, dropped, schema)
     else:
-        extraction_prompt = _build_extraction_prompt(rest, schema)
+        extraction_prompt = _build_extraction_prompt(dropped, schema)
         start = time.monotonic()
-        capsule_text = call_generate(generate, extraction_prompt, **generate_kwargs)
+        state_text = call_generate(generate, extraction_prompt, **generate_kwargs)
         latency_ms = (time.monotonic() - start) * 1000
 
-    capsule_data = _parse_capsule_response(capsule_text, schema)
+    state_data = _parse_state_response(state_text, schema)
 
-    capsule_msg = Message(
+    state_msg = Message(
         role=Role.USER,
-        content=capsule_text,
+        content=state_text,
         metadata={
             "llmigrate_synthetic": True,
-            "capsule_schema": list(schema.keys()),
+            "state_schema": list(schema.keys()),
         },
     )
 
     metadata: dict[str, Any] = {
-        "original_count": len(messages),
         "schema_fields": list(schema.keys()),
-        "capsule_data": capsule_data,
+        "state_data": state_data,
     }
     if latency_ms is not None:
         metadata["latency_ms"] = latency_ms
 
-    return TransferResult(
-        messages=pinned + [capsule_msg],
-        strategy=Strategy.CAPSULE,
-        metadata=metadata,
+    return CompressionResult(messages=[state_msg], metadata=metadata)
+
+
+def transform(messages: list[Message], **params: Any) -> MigrationResult:
+    pin_first_user: bool = params.get("pin_first_user", True)
+    pinned, rest = split_pinned(messages, pin_first_user=pin_first_user)
+
+    result = compress(rest, _pinned=pinned, **params)
+
+    return MigrationResult(
+        messages=pinned + result.messages,
+        strategies=[Strategy.STRUCTURED_STATE],
+        metadata={"original_count": len(messages), **result.metadata},
     )
 
 
-def _heuristic_capsule(
+def _heuristic_state(
     pinned: list[Message], rest: list[Message], schema: dict[str, str]
 ) -> str:
-    """Best-effort, rule-based capsule extraction — no model call.
-
-    objective: the pinned task content, or the first user message otherwise.
-    completed/observations: distilled from assistant messages.
-    open_questions: the last user message, if it reads like a question.
-    next_steps: a generic placeholder when nothing else is inferable.
-    """
     user_msgs = [m for m in rest if m.role == Role.USER]
     assistant_msgs = [m for m in rest if m.role == Role.ASSISTANT]
     pinned_task = next((m.content for m in pinned if m.role == Role.USER), None)
@@ -110,10 +108,7 @@ def _heuristic_capsule(
     return "\n".join(lines)
 
 
-def _parse_capsule_response(text: str, schema: dict[str, str]) -> dict[str, str]:
-    """Parse a '## <field>' formatted response into {field: text}, best-effort.
-    Works for both the heuristic and generate()-based output, since both use
-    the same heading format."""
+def _parse_state_response(text: str, schema: dict[str, str]) -> dict[str, str]:
     matches = list(_HEADING_RE.finditer(text))
     normalized = {k.replace("_", " ").lower(): k for k in schema}
     result: dict[str, str] = {}
@@ -130,7 +125,6 @@ def _parse_capsule_response(text: str, schema: dict[str, str]) -> dict[str, str]
 def _build_extraction_prompt(
     messages: list[Message], schema: dict[str, str]
 ) -> list[dict[str, Any]]:
-    """Build the prompt that asks a model to extract a structured capsule."""
     conversation_text = "\n".join(
         f"{m.role.value}: {m.content}" for m in messages
     )
@@ -141,7 +135,7 @@ def _build_extraction_prompt(
         {
             "role": "user",
             "content": (
-                "Extract a structured state capsule from the conversation below, "
+                "Extract structured state from the conversation below, "
                 "so another model can continue the work with no other context. "
                 "For each field, use a '## <field name>' heading exactly as given, "
                 "followed by its content on the next line(s). Be concrete: preserve "

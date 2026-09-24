@@ -1,37 +1,74 @@
 """Migration strategies.
 
-Each strategy implements the transform() protocol:
-    transform(messages, **params) -> TransferResult
+Each strategy module exposes category-specific functions:
+- Selection: select(rest, **params) -> SelectionResult
+- Transformation: compress(dropped, **params) -> CompressionResult
+- Validation: validate(messages, **params) -> ValidationResult
+
+Legacy transform() entry points are kept for single-strategy use via
+the `strategy=` parameter on migrate().
 """
 
 from llmigrate.strategies.audit import transform as audit
-from llmigrate.strategies.capsule import transform as capsule
+from llmigrate.strategies.audit import validate as validate_audit
+from llmigrate.strategies.keep_last import select as select_keep_last
 from llmigrate.strategies.keep_last import transform as keep_last
 from llmigrate.strategies.raw import transform as raw
+from llmigrate.strategies.selective_history import select as select_selective_history
 from llmigrate.strategies.selective_history import transform as selective_history
+from llmigrate.strategies.structured_state import compress as compress_structured_state
+from llmigrate.strategies.structured_state import transform as structured_state
+from llmigrate.strategies.summarize import compress as compress_summarize
 from llmigrate.strategies.summarize import transform as summarize
-from llmigrate.strategies.summary_tail import transform as summary_tail
+from llmigrate.strategies.token_budget import select as select_token_budget
 from llmigrate.strategies.token_budget import transform as token_budget
+from llmigrate.types import StrategyCategory
 
 STRATEGY_REGISTRY: dict[str, object] = {
     "raw": raw,
     "keep_last": keep_last,
     "token_budget": token_budget,
     "summarize": summarize,
-    "capsule": capsule,
+    "structured_state": structured_state,
     "audit": audit,
     "selective_history": selective_history,
-    "summary_tail": summary_tail,
+}
+
+STRATEGY_CATEGORIES: dict[str, StrategyCategory] = {
+    "keep_last": StrategyCategory.SELECTION,
+    "token_budget": StrategyCategory.SELECTION,
+    "selective_history": StrategyCategory.SELECTION,
+    "summarize": StrategyCategory.TRANSFORMATION,
+    "structured_state": StrategyCategory.TRANSFORMATION,
+    "audit": StrategyCategory.VALIDATION,
+}
+
+SELECT_REGISTRY: dict[str, object] = {
+    "keep_last": select_keep_last,
+    "token_budget": select_token_budget,
+    "selective_history": select_selective_history,
+}
+
+COMPRESS_REGISTRY: dict[str, object] = {
+    "summarize": compress_summarize,
+    "structured_state": compress_structured_state,
+}
+
+VALIDATE_REGISTRY: dict[str, object] = {
+    "audit": validate_audit,
 }
 
 __all__ = [
+    "VALIDATE_REGISTRY",
+    "COMPRESS_REGISTRY",
+    "SELECT_REGISTRY",
+    "STRATEGY_CATEGORIES",
     "STRATEGY_REGISTRY",
     "audit",
-    "capsule",
+    "structured_state",
     "keep_last",
     "raw",
     "selective_history",
     "summarize",
-    "summary_tail",
     "token_budget",
 ]
