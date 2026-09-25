@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from llmigrate._util import message_to_text
 from llmigrate.pinning import split_pinned
 from llmigrate.summarizers import as_summarizer
 from llmigrate.tokens import estimate_tokens
@@ -93,9 +94,7 @@ def _truncate_to_budget(text: str, max_tokens: int) -> tuple[str, bool]:
 
 
 def _build_summary_prompt(messages: list[Message]) -> list[dict[str, Any]]:
-    conversation_text = "\n".join(
-        f"{m.role.value}: {m.content}" for m in messages
-    )
+    conversation_text = "\n".join(message_to_text(message) for message in messages)
     return [
         {
             "role": "user",

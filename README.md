@@ -10,7 +10,7 @@ Model routing is now routine: you start on a big reasoning model and hand off to
 
 - **One call, swappable strategies.** `migrate(messages, strategy="...")` — going from "keep the last few turns" to "summarize everything but the tail" to "extract a structured handoff state" is a one-line change, not a rewrite.
 - **Protected content, enforced centrally.** No strategy — truncation, summarization, or selection — can drop or dilute the system prompt or the first user message. This is checked by a framework-level guarantee and a registry-wide test, not left to each strategy's discretion. See [Protected Content](docs/API.md#protected-content-pinning).
-- **Provider-agnostic.** Pass OpenAI-format dicts, Anthropic-format dicts, or llmigrate's own canonical `Message` objects — the format is auto-detected. Model-assisted strategies take a plain `generate` callable rather than depending on any SDK, so any OpenAI-compatible endpoint (OpenAI itself, vLLM, LocalAI, LM Studio, Ollama, ...) works out of the box.
+- **Provider-agnostic.** Pass OpenAI-format dicts, Anthropic-format dicts, or llmigrate's own canonical `Message` objects. The format is usually detected automatically; set `input_format` for ambiguous content-part arrays. Model-assisted strategies take a plain `generate` callable rather than depending on any SDK, so any OpenAI-compatible endpoint (OpenAI itself, vLLM, LocalAI, LM Studio, Ollama, ...) works out of the box.
 - **Zero required dependencies.** Core functionality is pure standard library. `tiktoken` (accurate token counts) and `openai` (ready-made `generate` builders) are optional extras.
 - **Built for the messy cases**, not just clean chat transcripts: turn-boundary grouping keeps tool calls paired with their results, role-alternation is fixed up automatically for providers that reject consecutive same-role turns, and every model call reports latency/token accounting so migrations stay observable.
 
@@ -38,9 +38,14 @@ messages = [
 # Migrate the session to a new model, keeping the last 3 turns
 result = llmigrate.migrate(messages, strategy="keep_last", n=3)
 
-# result.messages is already in wire format — pass directly to the target model
-response = target_client.chat(messages=result.messages)
+# provider_messages removes llmigrate's per-message metadata before sending
+response = target_client.chat(messages=result.provider_messages)
 ```
+
+For Anthropic, pass `result.system` as the separate `system` argument alongside
+`result.provider_messages`. Cross-provider image, audio, document, and other
+provider-specific blocks are not silently discarded: convert them explicitly
+or keep the target format compatible with the source content.
 
 Swap `strategy="keep_last"` for `"summarize"`, `"structured_state"`, `"token_budget"`, `"selective_history"`, `"audit"`, or `"raw"` to change how the handoff is shaped — see the [strategy reference](docs/API.md#strategies) for what each one does and which use cases it fits.
 

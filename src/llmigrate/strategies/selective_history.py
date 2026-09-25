@@ -16,7 +16,7 @@ from typing import Any
 
 from llmigrate.pinning import split_pinned
 from llmigrate.selectors import Selector, category_of
-from llmigrate.tokens import default_tokenizer, estimate_tokens
+from llmigrate.tokens import default_tokenizer, estimate_message_tokens
 from llmigrate.types import Message, MigrationResult, SelectionResult, Strategy
 
 
@@ -47,7 +47,7 @@ def select(rest: list[Message], **params: Any) -> SelectionResult:
         kept_forced: list[Message] = []
         used = 0
         for m in reversed(forced):
-            cost = estimate_tokens(m.content, tokenizer)
+            cost = estimate_message_tokens(m, tokenizer)
             if used + cost > remaining_budget:
                 continue
             kept_forced.append(m)
@@ -62,7 +62,7 @@ def select(rest: list[Message], **params: Any) -> SelectionResult:
     selected: list[Message] = []
     used = 0
     for m, _score in ranked:
-        cost = estimate_tokens(m.content, tokenizer)
+        cost = estimate_message_tokens(m, tokenizer)
         if used + cost > remaining_budget:
             continue
         selected.append(m)
@@ -87,17 +87,17 @@ def transform(messages: list[Message], **params: Any) -> MigrationResult:
     tokenizer = params.get("tokenizer") or default_tokenizer(params.get("target_model"))
 
     index_of = {id(m): i for i, m in enumerate(messages)}
-    original_tokens = sum(estimate_tokens(m.content, tokenizer) for m in messages)
+    original_tokens = sum(estimate_message_tokens(m, tokenizer) for m in messages)
 
     pinned, rest = split_pinned(messages, pin_first_user=pin_first_user)
-    pinned_tokens = sum(estimate_tokens(m.content, tokenizer) for m in pinned)
+    pinned_tokens = sum(estimate_message_tokens(m, tokenizer) for m in pinned)
 
     result = select(rest, _pinned_tokens=pinned_tokens, **params)
 
     result_messages = pinned + result.kept
     selected_ids = sorted(index_of[id(m)] for m in result_messages)
     dropped_ids = sorted(set(index_of.values()) - set(selected_ids))
-    transferred_tokens = sum(estimate_tokens(m.content, tokenizer) for m in result_messages)
+    transferred_tokens = sum(estimate_message_tokens(m, tokenizer) for m in result_messages)
 
     score_by_id = result.metadata.get("scores", {})
     scores_by_index = {index_of[mid]: score for mid, score in score_by_id.items()}

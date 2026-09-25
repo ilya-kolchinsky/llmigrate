@@ -23,9 +23,9 @@ This document is the rigorous reference for llmigrate: the `migrate()` entry poi
 - [Token Estimation](#token-estimation)
 - [Model Context Windows](#model-context-windows)
 - [`generate()` Callables](#generate-callables)
-- [Format Adapters](#format-adapters)
-- [Errors & Validation](#errors--validation)
-- [Adding a New Strategy](#adding-a-new-strategy)
+- [Format Adapters](API-details.md#format-adapters)
+- [Errors & Validation](API-details.md#errors--validation)
+- [Adding a New Strategy](API-details.md#adding-a-new-strategy)
 
 ## `migrate()`
 
@@ -39,7 +39,9 @@ llmigrate.migrate(
     generate_kwargs: dict[str, Any] | None = None,
     source_model: str | None = None,
     target_model: str | None = None,
+    input_format: str | None = None,
     target_format: str | None = None,
+    system: str | None = None,
     enforce_alternation: bool = True,
     **params: Any,
 ) -> MigrationResult
@@ -48,14 +50,14 @@ llmigrate.migrate(
 The single entry point for every migration. `migrate()`:
 
 1. Validates `messages` (must be a `list`; every element must be a `dict` with a `"role"` key, or a `Message`).
-2. Auto-detects the input format (OpenAI dict, Anthropic dict, or canonical `Message`) and converts to canonical `Message` objects — see [Format Adapters](#format-adapters).
+2. Auto-detects the input format (OpenAI dict, Anthropic dict, or canonical `Message`) unless `input_format` is provided, then converts to canonical `Message` objects — see [Format Adapters](API-details.md#format-adapters).
 3. Validates that every message's `content` is a `str`.
 4. Routes to the appropriate execution path:
    - `strategy="X"` (single): looks up `X` in the strategy registry and calls its `transform()` function directly, producing flat metadata.
    - `strategies=[...]` (pipeline): validates the composition (at most one per category), then executes the pipeline in canonical order: selection → transformation → validation. Metadata is namespaced by category.
    - Neither specified (or `strategy="raw"` / `strategies=[]`): identity transform.
 5. Records `source_model`/`target_model` into `result.metadata` if not already set by the strategy.
-6. Unless the strategy is `raw`, merges consecutive same-role messages in the output — see [Role Alternation](#role-alternation). Controlled by `enforce_alternation`.
+6. Unless the strategy is `raw`, enforces role alternation where the target requires it while preserving tool IDs and provider content blocks — see [Role Alternation](#role-alternation). Controlled by `enforce_alternation`.
 7. Converts canonical `Message` objects to wire-format dicts (OpenAI or Anthropic) based on `target_format`.
 
 ### Parameters
@@ -69,7 +71,9 @@ The single entry point for every migration. `migrate()`:
 | `generate_kwargs` | `dict \| None` | `None` | Extra keyword arguments (e.g. `{"temperature": 0.2}`) passed to `generate` (or to the auto-wrapped `Summarizer`) on every call. Kept as a separate namespace from strategy params so the two can never collide — e.g. a strategy param named `temperature` would otherwise be ambiguous. |
 | `source_model` | `str \| None` | `None` | Name of the model the conversation started on. Recorded in `result.metadata["source_model"]`; interpolated into `audit`'s default instruction. |
 | `target_model` | `str \| None` | `None` | Name of the model the conversation is moving to. Recorded in `result.metadata["target_model"]`; used by `token_budget` and `selective_history` to size a default token budget and to pick a model-appropriate tokenizer — see [Model Context Windows](#model-context-windows) and [Token Estimation](#token-estimation). |
+| `input_format` | `str \| None` | `None` | Explicit input format: `"openai"`, `"anthropic"`, or `"canonical"`. Useful for content-part arrays whose format is ambiguous from shape alone. Canonical input still requires `Message` objects. |
 | `target_format` | `str \| None` | `None` | `"openai"` or `"anthropic"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed). |
+| `system` | `str \| None` | `None` | Optional top-level system prompt. Use when the source API supplies system instructions outside its message list (for example Anthropic); it is incorporated before strategies run. Do not pass a prompt already present in `messages` a second time. |
 | `enforce_alternation` | `bool` | `True` | Merge consecutive same-role messages in the result. Always skipped for `strategy="raw"` regardless of this flag, since `raw`'s contract is "unchanged". |
 | `**params` | `Any` | — | Strategy-specific parameters. See each strategy's table below. Every strategy that can drop or rewrite content also accepts `pin_first_user: bool = True` (see [Protected Content](#protected-content-pinning)). |
 
@@ -86,6 +90,8 @@ A `MigrationResult` (see [Core Types](#core-types)).
 - `TypeError` — `messages` is not a `list`, or an element is neither a `dict` nor a `Message`.
 - `ValueError` — a `dict` element is missing the `"role"` key, or any message's `content` is not a `str` after conversion.
 - `ValueError` — unknown `target_format`.
+- `ValueError` — unknown `input_format`, or an explicit input format incompatible with the supplied message representation.
+- `TypeError` — `messages` mixes provider dictionaries and `Message` objects.
 
 ## Core Types
 
@@ -116,6 +122,7 @@ Metadata keys used across the library:
 ```python
 class Role(Enum):
     SYSTEM = "system"
+    DEVELOPER = "developer"
     USER = "user"
     ASSISTANT = "assistant"
     TOOL_CALL = "tool_call"
@@ -164,7 +171,8 @@ class MigrationResult:
     system: str | None = None
 ```
 
-- `.messages` — the transformed conversation in wire format (OpenAI or Anthropic dicts), ready to pass directly to the target provider's API. For OpenAI format, system messages are included in the list. For Anthropic format, system messages are extracted into `.system`.
+- `.messages` — the transformed conversation in wire format (OpenAI or Anthropic dicts), including llmigrate's per-message metadata sidecar for inspection and compatibility. Use `.provider_messages` when sending the messages to a provider API.
+- `.provider_messages` — wire-format messages with the `"llmigrate"` sidecar removed. For OpenAI format, system messages are included in this list. For Anthropic format, pass `.system` separately.
 - `.strategies` — list of `Strategy` enums that were applied.
 - `.metadata` — transformation details. When using `strategy=` (single), metadata is flat. When using `strategies=` (pipeline), metadata from each step is namespaced under `"selection"`, `"transformation"`, and `"validation"` keys.
 - `.format` — the wire format of the output (`"openai"` or `"anthropic"`).
@@ -243,7 +251,7 @@ Capacity-based truncation: keeps as many whole recent turns as fit within a toke
 | `tokenizer` | `Callable[[str], int] \| None` | `default_tokenizer(target_model)` | Custom token counter; see [Token Estimation](#token-estimation). |
 | `pin_first_user` | `bool` | `True` | See [Protected Content](#protected-content-pinning). |
 
-**Behavior:** splits pinned vs. rest, computes `budget = max_tokens - tokens(pinned)` (floored at 0), groups `rest` into turns, and greedily accumulates whole turns from the most recent backwards until the next turn would exceed `budget`. Never splits a turn.
+**Behavior:** splits pinned vs. rest, computes `budget = max_tokens - estimated_tokens(pinned)` (floored at 0), groups `rest` into turns, and greedily accumulates whole turns from the most recent backwards until the next turn would exceed `budget`. Estimates include message roles, text, tool names/arguments and IDs, small framing overhead, and markers for media blocks. Never splits a turn.
 
 **Metadata:** `original_count`, `max_tokens` (the resolved value), `estimated_tokens_used`, `dropped_count`.
 
@@ -347,7 +355,7 @@ Chooses a **verbatim** subset of events that fits a token budget, ranked by a pl
 | `target_model` | `str \| None` | `None` | Used only to select a default tokenizer. |
 
 **Behavior:**
-1. Splits pinned vs. rest via `split_pinned()`; `remaining_budget = budget - tokens(pinned)`.
+1. Splits pinned vs. rest via `split_pinned()`; `remaining_budget = budget - estimated_tokens(pinned)`.
 2. If `always_keep` is set, partitions `rest` into `forced` (matching categories) and `candidates` (the remainder). `forced` is then trimmed to fit `remaining_budget`, most-recent-first, if it doesn't fit whole.
 3. Scores `candidates` with `selector.score(candidates)`, ranks by score descending, and greedily selects into the leftover budget (an item that doesn't fit is skipped, not swapped for a smaller one later in the ranking).
 4. Recombines `forced + selected`, restoring original chronological order within `rest`.
@@ -397,7 +405,7 @@ migrate(messages, strategies=["audit", "summarize", "keep_last"], n=3, generate=
 
 Every strategy that can drop or rewrite content calls `split_pinned()` instead of implementing its own filtering. A message is pinned if **any** of the following hold:
 
-- its role is `SYSTEM`;
+- its role is `SYSTEM` or `DEVELOPER`;
 - it carries `metadata["pinned"] = True` (works regardless of role or position — the escape hatch for protecting arbitrary messages, e.g. a prior migration's structured state);
 - it is the **first** `USER` message in the list, and `pin_first_user` is `True` (the default).
 
@@ -411,7 +419,7 @@ This is the mechanism that keeps a SWE-bench-style task description alive throug
 
 `src/llmigrate/alternation.py` — `enforce_alternation(messages) -> list[Message]`, applied by `migrate()` itself (not by individual strategies) whenever `enforce_alternation=True` (the default) and the strategy is not `raw`.
 
-Merges consecutive messages that share the same non-`SYSTEM` role into a single message: content is joined with `"\n\n"`, metadata is merged (later message's keys win on conflict), and `metadata["llmigrate_synthetic"]` is set on the merged message if either side had it set.
+Merges consecutive plain-text messages that share the same role, except `SYSTEM`, `DEVELOPER`, `TOOL_CALL`, and `TOOL_RESULT`: content is joined with `"\n\n"`, metadata is merged (later message's keys win on conflict), and `metadata["llmigrate_synthetic"]` is set on the merged message if either side had it set. Provider content-block messages are left intact so adapters can preserve their blocks and tool IDs while formatting the target request.
 
 This exists because pinning can incidentally produce non-alternating output — e.g. a pinned first-`USER` task immediately followed by a synthetic `USER`-role summary — which providers like Anthropic reject outright. Doing this centrally, rather than in each strategy, also guarantees pinned content survives verbatim *inside* the merged message even when a model-generated summary doesn't reproduce it.
 
@@ -515,7 +523,7 @@ default_tokenizer(target_model: str | None = None) -> Callable[[str], int]
 estimate_tokens(text: str, tokenizer: Callable[[str], int] | None = None) -> int
 ```
 
-`default_tokenizer()` returns a `tiktoken`-backed counter if the optional `tiktoken` package is installed (using `tiktoken.encoding_for_model(target_model)` when that model name is recognized, else `cl100k_base`), otherwise a character heuristic (`max(1, len(text) // 4)`, i.e. ~4 characters per token). `estimate_tokens()` applies a given tokenizer (or the heuristic, if none given) to a string. Any strategy accepting a `tokenizer` parameter takes a plain `Callable[[str], int]`, so a custom tokenizer (e.g. a provider-specific one) can always be substituted.
+`default_tokenizer()` returns a `tiktoken`-backed counter if the optional `tiktoken` package is installed (using `tiktoken.encoding_for_model(target_model)` when that model name is recognized, else `cl100k_base`), otherwise a character heuristic (`max(1, len(text) // 4)`, i.e. ~4 characters per token). `estimate_tokens()` applies a given tokenizer (or the heuristic, if none given) to a string. Budget strategies apply that counter to message text and tool payloads, with a small framing allowance and markers for media blocks. Image/audio/document token costs and provider-specific message/tool schemas are not knowable from text alone, so these remain estimates; leave additional room or supply a provider-aware custom tokenizer where needed. Any strategy accepting a `tokenizer` parameter takes a plain `Callable[[str], int]`, so a custom tokenizer (e.g. a provider-specific one) can always be substituted.
 
 ## Model Context Windows
 
@@ -586,62 +594,4 @@ generate = openai_compatible_generate(
 result = llmigrate.migrate(messages, strategy="summarize", generate=generate)
 ```
 
-## Format Adapters
-
-`src/llmigrate/adapters/` — convert between provider-native formats and canonical `Message`s. `migrate()` calls `auto_convert()` on input and converts back to wire format on output via `to_openai()` or `to_anthropic()`, controlled by `target_format`.
-
-### Auto-detection (`adapters/detect.py`)
-
-`auto_convert(messages) -> list[Message]` dispatches based on the first element:
-- `Message` → returned as-is (all elements are assumed to already be canonical).
-- `dict` whose `content` is a list containing a dict with `"type"` in `{"text", "tool_use", "tool_result", "image"}` → treated as Anthropic format (`from_anthropic`).
-- any other `dict` → treated as OpenAI format (`from_openai`), which also covers OpenAI-compatible self-hosted servers, since they speak the same wire format.
-- anything else → `TypeError`.
-
-Detection only inspects the *first* message, so a single call must use a consistent format throughout.
-
-### OpenAI (`adapters/openai.py`)
-
-`from_openai(messages: list[dict]) -> list[Message]` / `to_openai(messages: list[Message]) -> list[dict]`.
-
-Role mapping: `system`/`developer → SYSTEM`, `user → USER`, `assistant → ASSISTANT`, `tool`/`function → TOOL_RESULT`; a message with `tool_calls` present is reclassified as `TOOL_CALL` regardless of its stated role. `tool_calls`, `tool_call_id`, and `name` are round-tripped via `metadata`. `content: None` is normalized to `""`. An unrecognized `role` string raises `ValueError`.
-
-### Anthropic (`adapters/anthropic.py`)
-
-`from_anthropic(messages: list[dict], system: str | None = None) -> list[Message]` / `to_anthropic(messages: list[Message]) -> dict` (returns `{"system": str | None, "messages": [...]}`).
-
-`system`, if given, is prepended as a `SYSTEM` message. String content maps directly to `USER`/`ASSISTANT`. Content-block lists are inspected: blocks with `type == "tool_use"` classify the message as `TOOL_CALL` (converted into OpenAI-shaped `tool_calls` metadata for canonical storage); blocks with `type == "tool_result"` classify it as `TOOL_RESULT` (`tool_call_id` taken from `tool_use_id`); otherwise text blocks are concatenated and the role falls back to `USER`/`ASSISTANT`. The original block list is preserved in `metadata["anthropic_content"]` so `to_anthropic()` can round-trip it exactly rather than reconstructing lossily.
-
-## Errors & Validation
-
-Summary of every validation error surfaced by `migrate()` or a strategy's `transform()`:
-
-| Condition | Exception |
-|---|---|
-| `messages` is not a `list` | `TypeError` |
-| a `messages` element is neither `dict` nor `Message` | `TypeError` |
-| a `dict` element has no `"role"` key | `ValueError` |
-| a message's `content` is not a `str` | `ValueError` |
-| unrecognized OpenAI `role` string | `ValueError` (from `from_openai`) |
-| unsupported first-element type during format detection | `TypeError` (from `auto_convert`) |
-| unknown `strategy` name | `ValueError`, message lists available strategies |
-| unknown strategy name in `strategies` list | `ValueError` |
-| both `strategy` and `strategies` specified | `ValueError` |
-| more than one strategy from the same category in `strategies` | `ValueError` |
-| `"raw"` combined with other strategies in `strategies` | `ValueError` |
-| unknown `target_format` | `ValueError` |
-| `keep_last`: `n < 0` | `ValueError` |
-| `token_budget`: `max_tokens <= 0` | `ValueError` |
-| `selective_history`: missing `budget` or `budget < 0` | `ValueError` |
-| `selective_history`: missing `selector` | `ValueError` |
-| async `generate` called from within a running event loop | `RuntimeError` |
-
-## Adding a New Strategy
-
-1. Create a new module in `src/llmigrate/strategies/` with:
-   - A `transform(messages: list[Message], **params) -> MigrationResult` function for standalone use.
-   - A category-specific function: `select()` for selection, `compress()` for transformation, or `validate()` for validation.
-2. If the strategy can drop or rewrite content, call `pinning.split_pinned()` at the top of `transform()` and never touch the pinned half. The pipeline handles pinning centrally for the category-specific functions.
-3. Register it in `strategies/__init__.py`: add to `STRATEGY_REGISTRY`, `STRATEGY_CATEGORIES`, and the appropriate category registry (`SELECT_REGISTRY`, `COMPRESS_REGISTRY`, or `VALIDATE_REGISTRY`).
-4. Add a `Strategy` enum value in `types.py`.
-5. Add tests, including a `TIGHT_PARAMS` entry in `tests/test_pinning.py` so the registry-wide invariant tests cover it.
+Provider adapter details, validation errors, and extension guidance are in the [extended API reference](API-details.md).

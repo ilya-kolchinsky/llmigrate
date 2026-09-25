@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from llmigrate._util import call_generate
+from llmigrate._util import call_generate, message_to_text
 from llmigrate.pinning import split_pinned
 from llmigrate.types import CompressionResult, Message, MigrationResult, Role, Strategy
 
@@ -75,23 +75,34 @@ def _heuristic_state(
     pinned: list[Message], rest: list[Message], schema: dict[str, str]
 ) -> str:
     user_msgs = [m for m in rest if m.role == Role.USER]
-    assistant_msgs = [m for m in rest if m.role == Role.ASSISTANT]
-    pinned_task = next((m.content for m in pinned if m.role == Role.USER), None)
+    assistant_msgs = [
+        m for m in rest if m.role in (Role.ASSISTANT, Role.TOOL_CALL, Role.TOOL_RESULT)
+    ]
+    pinned_task = next(
+        (m.content or message_to_text(m) for m in pinned if m.role == Role.USER), None
+    )
 
     values: dict[str, str] = {}
     if "objective" in schema:
-        objective = pinned_task or (user_msgs[0].content if user_msgs else "")
+        objective = pinned_task or (
+            user_msgs[0].content or message_to_text(user_msgs[0]) if user_msgs else ""
+        )
         values["objective"] = objective or "(no objective found)"
     if "completed" in schema:
         values["completed"] = (
-            "; ".join(m.content[:200] for m in assistant_msgs[:-1]) or "(nothing completed yet)"
+            "; ".join(message_to_text(m)[:200] for m in assistant_msgs[:-1])
+            or "(nothing completed yet)"
         )
     if "observations" in schema:
         values["observations"] = (
-            assistant_msgs[-1].content[:400] if assistant_msgs else "(no observations)"
+            message_to_text(assistant_msgs[-1])[:400]
+            if assistant_msgs
+            else "(no observations)"
         )
     if "open_questions" in schema:
-        last_user = user_msgs[-1].content if user_msgs else ""
+        last_user = (
+            user_msgs[-1].content or message_to_text(user_msgs[-1]) if user_msgs else ""
+        )
         values["open_questions"] = (
             last_user if last_user.strip().endswith("?") else "(none identified)"
         )
@@ -125,9 +136,7 @@ def _parse_state_response(text: str, schema: dict[str, str]) -> dict[str, str]:
 def _build_extraction_prompt(
     messages: list[Message], schema: dict[str, str]
 ) -> list[dict[str, Any]]:
-    conversation_text = "\n".join(
-        f"{m.role.value}: {m.content}" for m in messages
-    )
+    conversation_text = "\n".join(message_to_text(message) for message in messages)
     schema_text = "\n".join(
         f"- **{k}**: {v}" for k, v in schema.items()
     )

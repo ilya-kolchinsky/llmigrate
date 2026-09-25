@@ -7,7 +7,7 @@ from typing import Any
 
 from llmigrate.models import context_window_for
 from llmigrate.pinning import split_pinned
-from llmigrate.tokens import default_tokenizer, estimate_tokens
+from llmigrate.tokens import default_tokenizer, estimate_message_tokens
 from llmigrate.turns import group_into_turns
 from llmigrate.types import Message, MigrationResult, SelectionResult, Strategy
 
@@ -40,7 +40,7 @@ def select(rest: list[Message], **params: Any) -> SelectionResult:
     kept_turns: list[list[Message]] = []
     used = 0
     for turn in reversed(turns):
-        cost = sum(estimate_tokens(m.content, tokenizer) for m in turn)
+        cost = sum(estimate_message_tokens(m, tokenizer) for m in turn)
         if used + cost > budget:
             break
         kept_turns.append(turn)
@@ -69,7 +69,7 @@ def transform(messages: list[Message], **params: Any) -> MigrationResult:
     )
 
     pinned, rest = split_pinned(messages, pin_first_user=pin_first_user)
-    pinned_tokens = sum(estimate_tokens(m.content, tokenizer) for m in pinned)
+    pinned_tokens = sum(estimate_message_tokens(m, tokenizer) for m in pinned)
 
     result = select(rest, _pinned_tokens=pinned_tokens, **params)
 

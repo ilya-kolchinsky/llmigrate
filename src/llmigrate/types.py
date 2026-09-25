@@ -13,6 +13,7 @@ from typing import Any
 
 class Role(Enum):
     SYSTEM = "system"
+    DEVELOPER = "developer"
     USER = "user"
     ASSISTANT = "assistant"
     TOOL_CALL = "tool_call"
@@ -102,3 +103,23 @@ class MigrationResult:
     @property
     def transferred_count(self) -> int:
         return len(self.messages)
+
+    @property
+    def provider_messages(self) -> list[dict[str, Any]]:
+        """Return wire-format messages without llmigrate's private metadata.
+
+        ``messages`` retains per-message llmigrate metadata for inspection and
+        backward compatibility. Provider request schemas generally do not
+        accept that extension, so use this property when forwarding the result
+        directly to an API. Anthropic callers should also pass ``system``.
+        """
+        provider_messages: list[dict[str, Any]] = []
+        for message in self.messages:
+            if not isinstance(message, dict):
+                raise TypeError(
+                    "provider_messages is available only after wire-format conversion"
+                )
+            provider_messages.append(
+                {key: value for key, value in message.items() if key != "llmigrate"}
+            )
+        return provider_messages

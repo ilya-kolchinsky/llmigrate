@@ -25,7 +25,7 @@ from llmigrate.strategies import (
     VALIDATE_REGISTRY,
 )
 from llmigrate.summarizers import GenerateSummarizer, Summarizer, SummarizerResult, TokenUsage
-from llmigrate.tokens import default_tokenizer, estimate_tokens
+from llmigrate.tokens import default_tokenizer, estimate_message_tokens
 from llmigrate.types import (
     CompressionResult,
     Message,
@@ -71,7 +71,9 @@ def migrate(
     generate_kwargs: dict[str, Any] | None = None,
     source_model: str | None = None,
     target_model: str | None = None,
+    input_format: str | None = None,
     target_format: str | None = None,
+    system: str | None = None,
     enforce_alternation: bool = True,
     **params: Any,
 ) -> MigrationResult:
@@ -79,14 +81,21 @@ def migrate(
 
     _validate_messages_input(messages)
 
-    detected = detect_format(messages)
+    detected = input_format or detect_format(messages)
+    if detected not in {_OPENAI, _ANTHROPIC, _CANONICAL}:
+        raise ValueError(
+            f"Unknown input_format: {detected!r}. Must be 'openai', 'anthropic', or 'canonical'."
+        )
     resolved_format = target_format or (detected if detected != _CANONICAL else _OPENAI)
     if resolved_format not in _VALID_FORMATS:
         raise ValueError(
             f"Unknown target_format: {resolved_format!r}. Must be 'openai' or 'anthropic'."
         )
 
-    canonical = _validate_canonical(auto_convert(messages))
+    canonical = auto_convert(messages, input_format=input_format)
+    if system is not None:
+        canonical = [Message(role=Role.SYSTEM, content=system), *canonical]
+    canonical = _validate_canonical(canonical)
 
     if generate is not None:
         params["generate"] = generate
@@ -191,10 +200,11 @@ def _execute_pipeline(
     metadata: dict[str, Any] = {"original_count": len(canonical)}
 
     selection_name = by_category.get(StrategyCategory.SELECTION)
+    transform_name = by_category.get(StrategyCategory.TRANSFORMATION)
     if selection_name:
         select_fn = SELECT_REGISTRY[selection_name]
         tokenizer = params.get("tokenizer") or default_tokenizer(params.get("target_model"))
-        pinned_tokens = sum(estimate_tokens(m.content, tokenizer) for m in pinned)
+        pinned_tokens = sum(estimate_message_tokens(m, tokenizer) for m in pinned)
         sel_result = cast(
             SelectionResult,
             select_fn(rest, _pinned_tokens=pinned_tokens, **params),  # type: ignore[operator]
@@ -204,10 +214,12 @@ def _execute_pipeline(
         applied.append(Strategy(selection_name))
         metadata["selection"] = sel_result.metadata
     else:
-        kept = []
-        dropped = list(rest)
+        # With no selector, a transformation consumes the full history. A
+        # validation-only pipeline (for example strategies=["audit"]) must
+        # instead preserve the full history and pass it to validation.
+        kept = [] if transform_name else list(rest)
+        dropped = list(rest) if transform_name else []
 
-    transform_name = by_category.get(StrategyCategory.TRANSFORMATION)
     if transform_name:
         compress_fn = COMPRESS_REGISTRY[transform_name]
         compress_params = dict(params)
@@ -223,7 +235,11 @@ def _execute_pipeline(
     else:
         transform_msgs = []
 
-    assembled = pinned + transform_msgs + kept
+    if selection_name is None and transform_name is None:
+        # Validation-only pipelines must not reorder explicitly pinned messages.
+        assembled = list(canonical)
+    else:
+        assembled = pinned + transform_msgs + kept
 
     validate_name = by_category.get(StrategyCategory.VALIDATION)
     if validate_name:
@@ -246,10 +262,17 @@ def _execute_pipeline(
 def _validate_messages_input(messages: Any) -> None:
     if not isinstance(messages, list):
         raise TypeError(f"messages must be a list, got {type(messages).__name__}")
+    representation: str | None = None
     for i, msg in enumerate(messages):
         if isinstance(msg, Message):
+            if representation == "dict":
+                raise TypeError("messages cannot mix dicts and llmigrate.Message objects")
+            representation = "message"
             continue
         if isinstance(msg, dict):
+            if representation == "message":
+                raise TypeError("messages cannot mix dicts and llmigrate.Message objects")
+            representation = "dict"
             if "role" not in msg:
                 raise ValueError(f"messages[{i}] is missing required key 'role'")
             continue
