@@ -8,9 +8,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
+from llmigrate._util import message_to_text
 from llmigrate.types import Message, Role
 
 _DEFAULT_CATEGORIES: dict[Role, str] = {
+    Role.DEVELOPER: "system",
     Role.USER: "user_instruction",
     Role.ASSISTANT: "assistant",
     Role.TOOL_CALL: "tool_call",
@@ -87,13 +89,13 @@ class RelevanceSelector:
             return self.query(messages)
         if isinstance(self.query, str):
             return self.query
-        return messages[0].content if messages else ""
+        return message_to_text(messages[0]) if messages else ""
 
     def score(self, messages: list[Message]) -> list[float]:
         if not messages:
             return []
         query_text = self._resolve_query(messages)
-        vectors = self.embed([query_text, *[m.content for m in messages]])
+        vectors = self.embed([query_text, *[message_to_text(m) for m in messages]])
         query_vec, *msg_vecs = vectors
         return [_cosine_similarity(query_vec, v) for v in msg_vecs]
 

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from llmigrate._util import message_to_text
+from llmigrate.types import Message
+
 
 def _char_heuristic(text: str) -> int:
     """Approximate token count. ~4 characters per token is a rough heuristic."""
@@ -36,3 +39,10 @@ def default_tokenizer(target_model: str | None = None) -> Callable[[str], int]:
 
 def estimate_tokens(text: str, tokenizer: Callable[[str], int] | None = None) -> int:
     return (tokenizer or _char_heuristic)(text)
+
+
+def estimate_message_tokens(
+    message: Message, tokenizer: Callable[[str], int] | None = None
+) -> int:
+    """Estimate text, tool payload, media markers, and per-message framing."""
+    return estimate_tokens(message_to_text(message), tokenizer) + 4

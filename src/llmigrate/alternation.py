@@ -21,7 +21,22 @@ def enforce_alternation(messages: list[Message]) -> list[Message]:
     result: list[Message] = [messages[0]]
     for msg in messages[1:]:
         prev = result[-1]
-        if msg.role != Role.SYSTEM and msg.role == prev.role:
+        # Tool events carry call IDs and may legitimately repeat (for example,
+        # several parallel tool results follow one assistant tool-call turn).
+        # Combining them as plain text would overwrite those IDs and corrupt
+        # the provider transcript.
+        mergeable_role = msg.role not in (
+            Role.SYSTEM,
+            Role.DEVELOPER,
+            Role.TOOL_CALL,
+            Role.TOOL_RESULT,
+        )
+        provider_blocks = any(
+            key in message.metadata
+            for message in (prev, msg)
+            for key in ("openai_content", "anthropic_content")
+        )
+        if mergeable_role and not provider_blocks and msg.role == prev.role:
             merged_metadata = {**prev.metadata, **msg.metadata}
             if prev.metadata.get("llmigrate_synthetic") or msg.metadata.get("llmigrate_synthetic"):
                 merged_metadata["llmigrate_synthetic"] = True

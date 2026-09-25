@@ -18,10 +18,10 @@ def split_pinned(
 ) -> tuple[list[Message], list[Message]]:
     """Split messages into (pinned, rest).
 
-    Pinned messages are never dropped, rewritten, reordered, or fed through a
+    Pinned messages are never dropped, rewritten, or fed through a
     summarizer by any strategy — they are always emitted verbatim. A message is
     pinned if any of the following hold:
-    - its role is SYSTEM
+    - its role is SYSTEM or DEVELOPER
     - it is the first USER message, and pin_first_user is True (the default)
     - it carries metadata["pinned"] = True (an explicit escape hatch for callers
       who want to protect something else, e.g. a prior transfer's structured state)
@@ -32,7 +32,7 @@ def split_pinned(
 
     for msg in messages:
         is_pinned = (
-            msg.role == Role.SYSTEM
+            msg.role in (Role.SYSTEM, Role.DEVELOPER)
             or msg.metadata.get("pinned") is True
             or (pin_first_user and not first_user_seen and msg.role == Role.USER)
         )
