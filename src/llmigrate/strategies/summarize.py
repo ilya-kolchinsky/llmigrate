@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 from llmigrate._util import message_to_text
 from llmigrate.pinning import split_pinned
-from llmigrate.summarizers import as_summarizer
+from llmigrate.summarizers import GenerateSummarizer, as_summarizer, summarize_async
 from llmigrate.tokens import estimate_tokens
 from llmigrate.types import CompressionResult, Message, MigrationResult, Role, Strategy
 
@@ -39,6 +40,13 @@ def compress(dropped: list[Message], **params: Any) -> CompressionResult:
         summarizer_repr = repr(summarizer)
         prompt = _build_summary_prompt(dropped)
         summarizer_result = summarizer.summarize(prompt)
+        if inspect.isawaitable(summarizer_result):
+            if inspect.iscoroutine(summarizer_result):
+                summarizer_result.close()
+            raise RuntimeError(
+                "summarizer.summarize() returned an awaitable; use async_migrate() "
+                "with an async summarizer instead."
+            )
         summary_text = summarizer_result.text
 
         if max_summary_tokens is not None:
@@ -70,6 +78,68 @@ def compress(dropped: list[Message], **params: Any) -> CompressionResult:
         },
     )
 
+    return CompressionResult(messages=[summary_msg], metadata=metadata)
+
+
+async def compress_async(dropped: list[Message], **params: Any) -> CompressionResult:
+    """Async counterpart to ``compress`` for ``async_migrate``."""
+    generate = params.get("generate")
+    generate_kwargs: dict[str, Any] = params.get("generate_kwargs") or {}
+    max_summary_tokens: int | None = params.get("max_summary_tokens")
+    summarizer_obj = params.get("summarizer")
+
+    if not dropped:
+        return CompressionResult(messages=[], metadata={"summarized": False})
+
+    truncated = False
+    summarizer_result = None
+    summarizer_repr: str | None = None
+    if generate is None and summarizer_obj is None:
+        summary_text = f"[Prior conversation ({len(dropped)} messages) omitted for brevity]"
+        metadata: dict[str, Any] = {
+            "summarized": False,
+            "summarized_count": len(dropped),
+        }
+    else:
+        summarizer = summarizer_obj or generate
+        summarizer_repr = (
+            repr(summarizer)
+            if hasattr(summarizer, "summarize")
+            else repr(GenerateSummarizer(summarizer, generate_kwargs))
+        )
+        prompt = _build_summary_prompt(dropped)
+        summarizer_result = await summarize_async(
+            summarizer, prompt, generate_kwargs=generate_kwargs
+        )
+        summary_text = summarizer_result.text
+        if max_summary_tokens is not None:
+            summary_text, truncated = _truncate_to_budget(summary_text, max_summary_tokens)
+
+        metadata = {
+            "summarized": True,
+            "summarized_count": len(dropped),
+            "summarizer": summarizer_repr,
+        }
+        if summarizer_result.latency_ms is not None:
+            metadata["latency_ms"] = summarizer_result.latency_ms
+        if summarizer_result.token_usage is not None:
+            metadata["token_usage"] = summarizer_result.token_usage
+        if summarizer_result.cost is not None:
+            metadata["cost"] = summarizer_result.cost
+        if summarizer_result.model is not None:
+            metadata["model"] = summarizer_result.model
+        if truncated:
+            metadata["summary_truncated"] = True
+
+    summary_msg = Message(
+        role=Role.USER,
+        content=summary_text,
+        metadata={
+            "llmigrate_synthetic": True,
+            "summarized_count": len(dropped),
+            **({"summary_truncated": True} if truncated else {}),
+        },
+    )
     return CompressionResult(messages=[summary_msg], metadata=metadata)
 
 

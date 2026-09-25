@@ -1,10 +1,11 @@
 # llmigrate API Reference
 
-This document is the rigorous reference for llmigrate: the `migrate()` entry point, every strategy and its parameters, the core types, and the supporting abstractions (pinning, alternation, selectors, summarizers, token estimation, model context windows, `generate()` builders, and format adapters). For the pitch and a quick start, see the [README](../README.md).
+This document is the reference for llmigrate's `migrate()` and `async_migrate()` entry points, strategies, core types, and supporting abstractions (pinning, alternation, selectors, summarizers, token estimation, model context windows, `generate()` builders, and format adapters). For the pitch and a quick start, see the [README](../README.md).
 
 ## Table of Contents
 
 - [`migrate()`](#migrate)
+- [`async_migrate()`](#async_migrate)
 - [Core Types](#core-types)
 - [Strategies](#strategies)
   - [`raw`](#raw)
@@ -47,33 +48,47 @@ llmigrate.migrate(
 ) -> MigrationResult
 ```
 
-The single entry point for every migration. `migrate()`:
+The synchronous entry point for every migration. `migrate()`:
 
-1. Validates `messages` (must be a `list`; every element must be a `dict` with a `"role"` key, or a `Message`).
-2. Auto-detects the input format (OpenAI dict, Anthropic dict, or canonical `Message`) unless `input_format` is provided, then converts to canonical `Message` objects — see [Format Adapters](API-details.md#format-adapters).
-3. Validates that every message's `content` is a `str`.
+1. Validates `messages` (must be a `list`; elements are provider dictionaries or canonical `Message` objects).
+2. Auto-detects the input format (OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, Gemini Interactions, or canonical `Message`) unless `input_format` is provided, then converts to canonical `Message` objects — see [Format Adapters](API-details.md#format-adapters).
+3. Converts supported text content to the canonical string representation. Unsupported item kinds and content blocks raise `ValueError`; see [Supported Data](API-details.md#supported-data-and-conversion-limits).
 4. Routes to the appropriate execution path:
    - `strategy="X"` (single): looks up `X` in the strategy registry and calls its `transform()` function directly, producing flat metadata.
    - `strategies=[...]` (pipeline): validates the composition (at most one per category), then executes the pipeline in canonical order: selection → transformation → validation. Metadata is namespaced by category.
    - Neither specified (or `strategy="raw"` / `strategies=[]`): identity transform.
 5. Records `source_model`/`target_model` into `result.metadata` if not already set by the strategy.
 6. Unless the strategy is `raw`, enforces role alternation where the target requires it while preserving tool IDs and provider content blocks — see [Role Alternation](#role-alternation). Controlled by `enforce_alternation`.
-7. Converts canonical `Message` objects to wire-format dicts (OpenAI or Anthropic) based on `target_format`.
+7. Converts canonical `Message` objects to the selected provider's wire-format items. Top-level system instructions are returned separately where required.
+
+### `async_migrate()`
+
+`async_migrate()` has the same arguments and result as `migrate()`, and is the entry point for code already running in an event loop, including async web servers, agent runtimes, and notebooks. It awaits async `generate` callables and async summarizers directly. Synchronous generators and summarizers run in a worker thread so they do not block the event loop.
+
+```python
+result = await llmigrate.async_migrate(
+    messages,
+    strategy="summarize",
+    generate=async_generate,
+)
+```
+
+Use `migrate()` from synchronous code. If its model-assisted strategy receives an async callback, it runs that callback with `asyncio.run`; calling this path from a thread that already has a running event loop raises `RuntimeError`. In that case, call `async_migrate()` instead.
 
 ### Parameters
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `messages` | `list[dict] \| list[Message]` | required | Conversation history. OpenAI-format dicts, Anthropic-format dicts, or canonical `Message` objects — auto-detected, may not be mixed within a single call except uniformly as `Message`. |
+| `messages` | `list[dict] \| list[Message]` | required | Conversation history in one supported provider format or canonical `Message` objects — auto-detected; provider formats cannot be mixed, and dictionaries cannot be mixed with `Message` objects. |
 | `strategy` | `str \| None` | `None` | Single strategy name — `"raw"`, `"keep_last"`, `"token_budget"`, `"summarize"`, `"structured_state"`, `"audit"`, `"selective_history"`. Sugar for `strategies=["X"]` but with flat (not namespaced) metadata. Mutually exclusive with `strategies`. |
 | `strategies` | `list[str] \| None` | `None` | List of strategy names to compose, in any order. At most one from each category (selection, transformation, validation). The library sorts internally: selection → transformation → validation. Mutually exclusive with `strategy`. |
-| `generate` | `Callable[[list[dict]], str] \| None` | `None` | Model call used by `summarize` and `structured_state`. May be a sync or async callable — async is auto-detected and awaited via `asyncio.run`. Forwarded into `params["generate"]`. |
+| `generate` | `Callable[[list[dict]], str] \| None` | `None` | Model call used by `summarize` and `structured_state`. May be sync or async. `migrate()` drives async callbacks with `asyncio.run` when no event loop is active; use `async_migrate()` from async code. Forwarded into `params["generate"]`. |
 | `generate_kwargs` | `dict \| None` | `None` | Extra keyword arguments (e.g. `{"temperature": 0.2}`) passed to `generate` (or to the auto-wrapped `Summarizer`) on every call. Kept as a separate namespace from strategy params so the two can never collide — e.g. a strategy param named `temperature` would otherwise be ambiguous. |
 | `source_model` | `str \| None` | `None` | Name of the model the conversation started on. Recorded in `result.metadata["source_model"]`; interpolated into `audit`'s default instruction. |
 | `target_model` | `str \| None` | `None` | Name of the model the conversation is moving to. Recorded in `result.metadata["target_model"]`; used by `token_budget` and `selective_history` to size a default token budget and to pick a model-appropriate tokenizer — see [Model Context Windows](#model-context-windows) and [Token Estimation](#token-estimation). |
-| `input_format` | `str \| None` | `None` | Explicit input format: `"openai"`, `"anthropic"`, or `"canonical"`. Useful for content-part arrays whose format is ambiguous from shape alone. Canonical input still requires `Message` objects. |
-| `target_format` | `str \| None` | `None` | `"openai"` or `"anthropic"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed). |
-| `system` | `str \| None` | `None` | Optional top-level system prompt. Use when the source API supplies system instructions outside its message list (for example Anthropic); it is incorporated before strategies run. Do not pass a prompt already present in `messages` a second time. |
+| `input_format` | `str \| None` | `None` | Explicit input format: `"openai"`, `"openai_responses"`, `"anthropic"`, `"gemini_interactions"`, or `"canonical"`. Useful when the message shape is ambiguous. Canonical input still requires `Message` objects. |
+| `target_format` | `str \| None` | `None` | `"openai"`, `"openai_responses"`, `"anthropic"`, or `"gemini_interactions"`. Controls the output wire format. When omitted, defaults to the detected input format (or `"openai"` for canonical `Message` objects). |
+| `system` | `str \| None` | `None` | Optional top-level system instruction. It is incorporated before strategies run. Output is in `MigrationResult.system` for Anthropic, OpenAI Responses (`instructions`), and Gemini Interactions (`system_instruction`). Do not pass a prompt already present in `messages` a second time. |
 | `enforce_alternation` | `bool` | `True` | Merge consecutive same-role messages in the result. Always skipped for `strategy="raw"` regardless of this flag, since `raw`'s contract is "unchanged". |
 | `**params` | `Any` | — | Strategy-specific parameters. See each strategy's table below. Every strategy that can drop or rewrite content also accepts `pin_first_user: bool = True` (see [Protected Content](#protected-content-pinning)). |
 
@@ -88,7 +103,7 @@ A `MigrationResult` (see [Core Types](#core-types)).
 - `ValueError` — `strategies` contains duplicate categories (e.g. two selection strategies).
 - `ValueError` — `"raw"` combined with other strategies in `strategies`.
 - `TypeError` — `messages` is not a `list`, or an element is neither a `dict` nor a `Message`.
-- `ValueError` — a `dict` element is missing the `"role"` key, or any message's `content` is not a `str` after conversion.
+- `ValueError` — a provider dictionary is missing its required role/type fields, or its content cannot be represented as supported text.
 - `ValueError` — unknown `target_format`.
 - `ValueError` — unknown `input_format`, or an explicit input format incompatible with the supplied message representation.
 - `TypeError` — `messages` mixes provider dictionaries and `Message` objects.
@@ -105,7 +120,7 @@ class Message:
     metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
-The canonical, provider-agnostic message representation. `to_dict()` / `from_dict()` round-trip through `{"role": ..., "content": ..., "metadata": ...}` (metadata omitted when empty). This type is purely internal — `migrate()` always returns wire-format dicts, not `Message` objects.
+The canonical, provider-agnostic message representation. `to_dict()` / `from_dict()` round-trip through `{"role": ..., "content": ..., "metadata": ...}` (metadata omitted when empty). This type is used internally; `migrate()` and `async_migrate()` return provider-format items, not canonical `Message` objects.
 
 Metadata keys used across the library:
 
@@ -114,8 +129,10 @@ Metadata keys used across the library:
 | `pinned` | caller | Forces this message to be treated as protected content by `split_pinned()`, regardless of role or position. |
 | `category` | caller | Overrides the default role-derived category used by `selective_history`'s selectors (see [Selectors](#selectors)). |
 | `llmigrate_synthetic` | library | Set on any message the library generates (summaries, structured state extractions, audit instructions). Also propagated onto a merged message by `enforce_alternation` if either half was synthetic. |
-| `tool_calls`, `tool_call_id`, `name` | OpenAI adapter | Preserved OpenAI tool-call fields, round-tripped by `to_openai()`. |
-| `anthropic_content`, `tool_call_id` | Anthropic adapter | Preserved Anthropic content-block payloads, round-tripped by `to_anthropic()`. |
+| `tool_calls`, `tool_call_id`, `name` | OpenAI and tool-capable adapters | Canonical tool-call/result fields used across formats. |
+| `anthropic_content` | Anthropic adapter | Preserved Anthropic content-block payloads for safe same-format conversion. |
+| `responses_item` and related keys | OpenAI Responses adapter | Original Responses item snapshots used to preserve unchanged provider fields. |
+| `gemini_interactions_step` and related keys | Gemini Interactions adapter | Original Interactions step snapshots used to preserve unchanged provider fields. |
 
 ### `Role`
 
@@ -171,12 +188,12 @@ class MigrationResult:
     system: str | None = None
 ```
 
-- `.messages` — the transformed conversation in wire format (OpenAI or Anthropic dicts), including llmigrate's per-message metadata sidecar for inspection and compatibility. Use `.provider_messages` when sending the messages to a provider API.
-- `.provider_messages` — wire-format messages with the `"llmigrate"` sidecar removed. For OpenAI format, system messages are included in this list. For Anthropic format, pass `.system` separately.
+- `.messages` — the transformed conversation in the selected provider format, including llmigrate's per-item metadata sidecar for inspection. Use `.provider_messages` when sending the items to a provider API.
+- `.provider_messages` — wire-format messages, Responses items, or Interactions steps with the `"llmigrate"` sidecar removed. OpenAI Chat Completions includes system/developer messages in this list. For Anthropic, Responses, and Gemini Interactions, pass `.system` separately using the provider's corresponding system argument.
 - `.strategies` — list of `Strategy` enums that were applied.
 - `.metadata` — transformation details. When using `strategy=` (single), metadata is flat. When using `strategies=` (pipeline), metadata from each step is namespaced under `"selection"`, `"transformation"`, and `"validation"` keys.
-- `.format` — the wire format of the output (`"openai"` or `"anthropic"`).
-- `.system` — the system prompt content (populated for Anthropic format, `None` for OpenAI format).
+- `.format` — the output format: `"openai"`, `"openai_responses"`, `"anthropic"`, or `"gemini_interactions"`.
+- `.system` — the top-level system instruction for Anthropic, OpenAI Responses, and Gemini Interactions; `None` for OpenAI Chat Completions.
 - `.original_count` — `int(metadata.get("original_count", 0))`, the length of the input.
 - `.transferred_count` — `len(messages)`, the length of the output.
 
@@ -356,15 +373,16 @@ Chooses a **verbatim** subset of events that fits a token budget, ranked by a pl
 
 **Behavior:**
 1. Splits pinned vs. rest via `split_pinned()`; `remaining_budget = budget - estimated_tokens(pinned)`.
-2. If `always_keep` is set, partitions `rest` into `forced` (matching categories) and `candidates` (the remainder). `forced` is then trimmed to fit `remaining_budget`, most-recent-first, if it doesn't fit whole.
-3. Scores `candidates` with `selector.score(candidates)`, ranks by score descending, and greedily selects into the leftover budget (an item that doesn't fit is skipped, not swapped for a smaller one later in the ranking).
-4. Recombines `forced + selected`, restoring original chronological order within `rest`.
+2. Groups messages connected by tool-call IDs into indivisible events; other messages are single-message events.
+3. If `always_keep` is set, any event containing a message in a forced category is forced as a whole. If the forced events do not fit, the most recent events that fit are kept.
+4. Scores candidate messages with `selector.score(candidates)`. Each event receives its highest member score; events are ranked by that score and greedily selected into the remaining budget (an event that does not fit is skipped, not swapped for smaller events later in the ranking).
+5. Recombines forced and selected events, restoring original chronological order within `rest`.
 
-**Limitation:** operates at message granularity — it does not guarantee `TOOL_CALL`/`TOOL_RESULT` pairing the way turn-based strategies do. Put both categories in `always_keep` if pairing matters.
+**Tool-event safety:** a function call and its known result(s) are kept or dropped together, including parallel calls represented in one message. This prevents `selective_history` from knowingly emitting an orphaned call or result. Results without a matching call remain standalone events because the missing call is not present in the input.
 
-**Metadata:** `original_count` (standalone only), `selected_event_ids` / `dropped_event_ids` (0-indexed positions in the *input* list, sorted ascending), `original_tokens`, `transferred_tokens`, `selector` (its `repr()`), `scores` (`dict[int, float]` mapping input index → score, for scored/candidate messages only — pinned and mandatorily-forced-but-not-scored messages are absent).
+**Metadata:** `original_count` (standalone only), `selected_event_ids` / `dropped_event_ids` (0-indexed message positions in the *input* list, sorted ascending; members of a tool event appear together), `original_tokens`, `transferred_tokens`, `selector` (its `repr()`), `scores` (`dict[int, float]` mapping input index → score, for scored/candidate messages only — pinned and mandatorily-forced-but-not-scored messages are absent).
 
-**When to use:** long agentic sessions where recency isn't the right retention signal — e.g. keeping every tool result (`always_keep={"tool_result"}`) while ranking assistant chatter by a `PrioritySelector`, or ranking by embedding similarity to the current task with a `RelevanceSelector`.
+**When to use:** long agentic sessions where recency isn't the right retention signal — e.g. forcing events that contain tool results with `always_keep={"tool_result"}` while ranking the remaining events by a `PrioritySelector`, or ranking by embedding similarity to the current task with a `RelevanceSelector`.
 
 ## Strategy Composition
 
@@ -498,9 +516,12 @@ class SummarizerResult:
 
 class Summarizer(Protocol):
     def summarize(self, messages: list[dict[str, Any]]) -> SummarizerResult: ...
+
+class AsyncSummarizer(Protocol):
+    async def summarize(self, messages: list[dict[str, Any]]) -> SummarizerResult: ...
 ```
 
-Implement `Summarizer` directly against your provider client (e.g. wrapping the OpenAI SDK's usage-reporting response) to get real `cost`/`model` reporting — a bare `generate` callable can't self-report either.
+Implement `Summarizer` or `AsyncSummarizer` directly against your provider client (for example, wrapping its usage-reporting response) to report actual `cost`, `model`, and token usage. An async summarizer is awaited by `async_migrate()`; the sync API accepts a synchronous `Summarizer`.
 
 ### `GenerateSummarizer`
 
@@ -508,7 +529,7 @@ Implement `Summarizer` directly against your provider client (e.g. wrapping the 
 GenerateSummarizer(generate: Callable[..., str], generate_kwargs: dict[str, Any] | None = None)
 ```
 
-Wraps a plain `generate` callable (sync or async, dispatched via `_util.call_generate`) as a `Summarizer`. Measures wall-clock `latency_ms` and estimates `token_usage` via the char-based heuristic (see [Token Estimation](#token-estimation)) regardless of whether `tiktoken` is installed; `cost` and `model` are always `None`.
+Wraps a plain `generate` callable as a `Summarizer`. The synchronous API dispatches it with `_util.call_generate`; `async_migrate()` uses the async path. It measures wall-clock `latency_ms` and estimates `token_usage` via the char-based heuristic (see [Token Estimation](#token-estimation)) regardless of whether `tiktoken` is installed; `cost` and `model` are always `None`.
 
 ### `as_summarizer(summarizer, generate_kwargs=None) -> Summarizer`
 
@@ -547,18 +568,18 @@ llmigrate.register_model_context_window("my-finetuned-llama", 32_768)
 
 ## `generate()` Callables
 
-Model-assisted strategies (`summarize`, `structured_state`) accept a `generate` callable with signature `Callable[[list[dict]], str]` (sync or async — auto-detected via `inspect.iscoroutinefunction` and dispatched by `_util.call_generate`). This is the mechanism that keeps llmigrate decoupled from any specific provider SDK: `generate` receives the OpenAI-style message list llmigrate builds internally for the summarization/extraction prompt, and returns the completion text.
+Model-assisted strategies (`summarize`, `structured_state`) accept a `generate` callable with signature `Callable[[list[dict]], str]` (sync or async). `migrate()` is for synchronous callers and runs async callbacks only when it can create an event loop. `async_migrate()` awaits async callbacks directly and sends synchronous callbacks to a worker thread. This keeps llmigrate decoupled from provider SDKs: `generate` receives the OpenAI-style message list built for the summarization/extraction prompt and returns completion text.
 
 ```python
 result = llmigrate.migrate(
     messages,
     strategy="summarize",
-    generate=my_generate_fn,       # Callable[[list[dict]], str], sync or async
+    generate=my_generate_fn,       # synchronous callable, or async outside a running loop
     generate_kwargs={"temperature": 0.2},
 )
 ```
 
-Calling an async `generate` from inside an already-running event loop raises `RuntimeError` (`asyncio.run` cannot be nested) — call `migrate()` from synchronous code, or drive it via `asyncio.to_thread`/an executor if you're already inside an event loop.
+Inside an async agent or server, use `await llmigrate.async_migrate(...)` with an async generator or summarizer. Calling `migrate()` with an async callback from within an already-running event loop raises `RuntimeError`; the sync entry point cannot nest event loops.
 
 ### `generators.py` — OpenAI-compatible builders
 

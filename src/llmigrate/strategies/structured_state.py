@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from llmigrate._util import call_generate, message_to_text
+from llmigrate._util import call_generate, call_generate_async, message_to_text
 from llmigrate.pinning import split_pinned
 from llmigrate.types import CompressionResult, Message, MigrationResult, Role, Strategy
 
@@ -55,6 +55,40 @@ def compress(dropped: list[Message], **params: Any) -> CompressionResult:
     if latency_ms is not None:
         metadata["latency_ms"] = latency_ms
 
+    return CompressionResult(messages=[state_msg], metadata=metadata)
+
+
+async def compress_async(dropped: list[Message], **params: Any) -> CompressionResult:
+    """Async counterpart to ``compress`` for ``async_migrate``."""
+    generate: Callable[..., str] | None = params.get("generate")
+    generate_kwargs: dict[str, Any] = params.get("generate_kwargs") or {}
+    schema: dict[str, str] = params.get("schema", DEFAULT_STATE_SCHEMA)
+    pinned: list[Message] = params.get("_pinned", [])
+
+    latency_ms: float | None = None
+    if generate is None:
+        state_text = _heuristic_state(pinned, dropped, schema)
+    else:
+        extraction_prompt = _build_extraction_prompt(dropped, schema)
+        start = time.monotonic()
+        state_text = await call_generate_async(generate, extraction_prompt, **generate_kwargs)
+        latency_ms = (time.monotonic() - start) * 1000
+
+    state_data = _parse_state_response(state_text, schema)
+    state_msg = Message(
+        role=Role.USER,
+        content=state_text,
+        metadata={
+            "llmigrate_synthetic": True,
+            "state_schema": list(schema.keys()),
+        },
+    )
+    metadata: dict[str, Any] = {
+        "schema_fields": list(schema.keys()),
+        "state_data": state_data,
+    }
+    if latency_ms is not None:
+        metadata["latency_ms"] = latency_ms
     return CompressionResult(messages=[state_msg], metadata=metadata)
 
 

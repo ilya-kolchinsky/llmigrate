@@ -17,8 +17,10 @@ from llmigrate.strategies.raw import transform as raw
 from llmigrate.strategies.selective_history import select as select_selective_history
 from llmigrate.strategies.selective_history import transform as selective_history
 from llmigrate.strategies.structured_state import compress as compress_structured_state
+from llmigrate.strategies.structured_state import compress_async as compress_structured_state_async
 from llmigrate.strategies.structured_state import transform as structured_state
 from llmigrate.strategies.summarize import compress as compress_summarize
+from llmigrate.strategies.summarize import compress_async as compress_summarize_async
 from llmigrate.strategies.summarize import transform as summarize
 from llmigrate.strategies.token_budget import select as select_token_budget
 from llmigrate.strategies.token_budget import transform as token_budget
@@ -54,12 +56,18 @@ COMPRESS_REGISTRY: dict[str, object] = {
     "structured_state": compress_structured_state,
 }
 
+ASYNC_COMPRESS_REGISTRY: dict[str, object] = {
+    "summarize": compress_summarize_async,
+    "structured_state": compress_structured_state_async,
+}
+
 VALIDATE_REGISTRY: dict[str, object] = {
     "audit": validate_audit,
 }
 
 __all__ = [
     "VALIDATE_REGISTRY",
+    "ASYNC_COMPRESS_REGISTRY",
     "COMPRESS_REGISTRY",
     "SELECT_REGISTRY",
     "STRATEGY_CATEGORIES",

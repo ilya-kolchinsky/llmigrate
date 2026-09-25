@@ -1,68 +1,118 @@
 # Extended API Reference
 
-Provider-specific adapter details, validation errors, and extension guidance.
+Provider adapter details, data limits, validation errors, and extension guidance. The main [API reference](API.md) describes strategies and the `migrate()` / `async_migrate()` entry points.
 
 ## Format Adapters
 
-`src/llmigrate/adapters/` — convert between provider-native formats and canonical `Message`s. `migrate()` calls `auto_convert()` on input and converts back to wire format on output via `to_openai()` or `to_anthropic()`, controlled by `target_format`. If content-part arrays make the source ambiguous, set `input_format` explicitly.
+The adapters in `src/llmigrate/adapters/` translate provider-native history into canonical `Message` objects and convert the result back to the requested target format. Set `input_format` when an abbreviated or ambiguous history cannot be reliably identified.
+
+Supported format names are:
+
+| `input_format` / `target_format` | Provider representation |
+|---|---|
+| `openai` | OpenAI Chat Completions messages; also OpenAI-compatible endpoints |
+| `openai_responses` | Materialized OpenAI Responses input/output items |
+| `anthropic` | Anthropic Messages entries; its top-level system prompt uses `system=` |
+| `gemini_interactions` | Materialized Gemini Interactions steps |
+| `canonical` | `list[llmigrate.Message]` input only |
+
+`target_format="canonical"` is not supported; migrations return provider-ready data. Empty input defaults to `openai` unless a format is specified.
 
 ### Auto-detection (`adapters/detect.py`)
 
-`auto_convert(messages, input_format=None) -> list[Message]` dispatches based on the first element unless `input_format` is supplied:
-- `Message` → returned as-is (all elements are assumed to already be canonical).
-- `dict` whose `content` contains Anthropic-specific blocks such as `tool_use`, `tool_result`, or `image` → treated as Anthropic format (`from_anthropic`).
-- any other `dict` → treated as OpenAI format (`from_openai`), which also covers OpenAI-compatible self-hosted servers, since they speak the same wire format.
-- anything else → `TypeError`.
+`auto_convert(messages, input_format=None) -> list[Message]` detects canonical `Message` objects directly. Provider dictionary arrays are recognized by their item signatures: Gemini `user_input` / `model_output` / `function_result` steps, Responses `message` / `function_call` / `function_call_output` items, Anthropic content blocks, then OpenAI Chat Completions as the common default.
 
-Detection inspects content blocks across the message list, so a single call must use a consistent format throughout.
+The `function_call` item is shared by Gemini and Responses. Their identifiers differ in the normal shapes (`id` for Gemini, `call_id` for Responses); specify `input_format` when working with customized payloads or single items that do not carry the usual distinguishing field. A single call must contain one provider format, not a mixture.
 
-### OpenAI (`adapters/openai.py`)
+### OpenAI Chat Completions (`adapters/openai.py`)
 
-`from_openai(messages: list[dict]) -> list[Message]` / `to_openai(messages: list[Message]) -> list[dict]`.
+Roles map to the canonical `SYSTEM`, `DEVELOPER`, `USER`, `ASSISTANT`, `TOOL_CALL`, and `TOOL_RESULT` roles. Assistant `tool_calls` and legacy `function_call` fields are preserved in canonical metadata; tool results retain their `tool_call_id`. OpenAI-compatible servers use the same message shape.
 
-Role mapping: `system → SYSTEM`, `developer → DEVELOPER`, `user → USER`, `assistant → ASSISTANT`, `tool`/`function → TOOL_RESULT`; a message with `tool_calls` or legacy `function_call` is reclassified as `TOOL_CALL`. Supported tool fields are round-tripped via `metadata`. `content: None` is normalized to `""`. An unrecognized `role` string raises `ValueError`.
+The adapter preserves some content blocks for same-format pass-through. The presence of raw data in an unchanged message does not mean strategies can interpret or translate that data; see [Supported Data and Conversion Limits](#supported-data-and-conversion-limits).
 
-### Anthropic (`adapters/anthropic.py`)
+### Anthropic Messages (`adapters/anthropic.py`)
 
-`from_anthropic(messages: list[dict], system: str | None = None) -> list[Message]` / `to_anthropic(messages: list[Message]) -> dict` (returns `{"system": str | None, "messages": [...]}`).
+```python
+result = llmigrate.migrate(
+    anthropic_messages,
+    input_format="anthropic",
+    target_format="anthropic",
+    system=anthropic_system,
+)
+request = {"system": result.system, "messages": result.provider_messages}
+```
 
-`system`, if given, is prepended as a `SYSTEM` message. String content maps directly to `USER`/`ASSISTANT`. Content-block lists are inspected: blocks with `type == "tool_use"` classify the message as `TOOL_CALL` (converted into OpenAI-shaped `tool_calls` metadata for canonical storage); blocks with `type == "tool_result"` classify it as `TOOL_RESULT` and preserve every `tool_use_id`; otherwise text blocks are concatenated and the role falls back to `USER`/`ASSISTANT`. Untouched provider blocks are preserved. Cross-provider conversions that cannot represent multimodal blocks raise `ValueError` instead of discarding them; Anthropic signed thinking blocks cannot be rewritten safely.
+`tool_use` blocks map to canonical tool calls and `tool_result` blocks preserve their `tool_use_id`. The system prompt is returned separately as `MigrationResult.system`. Untouched content blocks can be retained in same-format conversions; rewritten signed thinking blocks and unsupported cross-provider blocks fail with `ValueError`.
+
+### OpenAI Responses (`adapters/openai_responses.py`; [API reference](https://platform.openai.com/docs/api-reference/responses))
+
+Input and output are materialized item lists. The adapter supports text `message` items with `system`, `developer`, `user`, or `assistant` roles, plus `function_call` and `function_call_output` items:
+
+```python
+history = [
+    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Find the release date."}]},
+    {"type": "function_call", "call_id": "call_1", "name": "search", "arguments": "{\"q\": \"release date\"}"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "Released in 2025."},
+]
+
+result = llmigrate.migrate(history, target_format="openai_responses")
+request = {"instructions": result.system, "input": result.provider_messages}
+```
+
+System messages are emitted through `result.system` as the Responses API `instructions` value. Tool-call arguments are JSON text; text tool outputs are strings. The adapter rejects non-text content parts, refusal and reasoning items, and other item types instead of discarding them. A server-side conversation or response ID is not a substitute for a materialized history and is not migrated.
+
+### Gemini Interactions (`adapters/gemini_interactions.py`; [overview](https://ai.google.dev/gemini-api/docs/interactions-overview))
+
+Input and output are materialized Interactions steps. Supported steps are text `user_input` / `model_output` and client function `function_call` / `function_result`:
+
+```python
+steps = [
+    {"type": "user_input", "content": [{"type": "text", "text": "Check the weather in Paris."}]},
+    {"type": "function_call", "id": "call_1", "name": "weather", "arguments": {"city": "Paris"}},
+    {"type": "function_result", "call_id": "call_1", "name": "weather", "result": "Sunny."},
+    {"type": "model_output", "content": [{"type": "text", "text": "It is sunny."}]},
+]
+
+result = llmigrate.migrate(steps, target_format="gemini_interactions")
+request = {"system_instruction": result.system, "input": result.provider_messages}
+```
+
+Function arguments must be JSON objects when converting to Gemini. Text or JSON function results can be represented; multimodal results cannot. The adapter rejects `thought`, built-in/server tool steps, and other unsupported step types. Gemini's [stateless function-calling flow](https://ai.google.dev/gemini-api/docs/function-calling) can require thought steps to be replayed exactly; those provider-specific steps are not portable context for cross-model migration, so such histories currently fail closed. An interaction ID or `previous_interaction_id` is server-side state, not a materialized history.
+
+## Supported Data and Conversion Limits
+
+llmigrate's strategies operate on a canonical message with a string `content`. It can transform textual conversation history and preserve structured function-call/result records whose IDs link the calls to their results. It does not provide multimodal understanding or media conversion.
+
+| Data | Behavior |
+|---|---|
+| Text messages | Supported across the four provider formats |
+| Function calls and results | Supported when IDs and required names/arguments are present; selection keeps known call/result groups together |
+| JSON function arguments/results | Preserved as structured data in raw same-format migrations; normalized as JSON text when a target format requires text |
+| Images, audio, video, documents, and other media | Not transformed; new Responses and Gemini adapters reject them. Existing OpenAI/Anthropic adapters may pass through some unchanged source blocks in same-format paths |
+| Provider reasoning, thought, and server-managed state | Not treated as portable conversation text; unsupported item types raise `ValueError` |
+
+Content-changing strategies may summarize or omit the dropped part of the history, and token estimates cannot account accurately for provider-specific framing or media. Preserve extra context budget and preprocess content explicitly when a session contains unsupported data. Cross-format migration is limited to the data represented by the canonical model; provider-specific semantics cannot be reconstructed automatically.
 
 ## Errors & Validation
-
-Summary of every validation error surfaced by `migrate()` or a strategy's `transform()`:
 
 | Condition | Exception |
 |---|---|
 | `messages` is not a `list` | `TypeError` |
-| a `messages` element is neither `dict` nor `Message` | `TypeError` |
-| a `dict` element has no `"role"` key | `ValueError` |
-| a message's `content` is not a `str` | `ValueError` |
-| unrecognized OpenAI `role` string | `ValueError` (from `from_openai`) |
-| unrecognized Anthropic `role` string | `ValueError` (from `from_anthropic`) |
-| unsupported first-element type during format detection | `TypeError` (from `auto_convert`) |
-| unknown `strategy` name | `ValueError`, message lists available strategies |
-| unknown strategy name in `strategies` list | `ValueError` |
-| both `strategy` and `strategies` specified | `ValueError` |
-| more than one strategy from the same category in `strategies` | `ValueError` |
-| `"raw"` combined with other strategies in `strategies` | `ValueError` |
-| unknown `target_format` | `ValueError` |
-| unknown `input_format` or input-format/message mismatch | `ValueError` |
-| mixed dictionary and `Message` inputs | `TypeError` |
-| provider conversion cannot represent a multimodal block, or a tool message is missing required identifiers | `ValueError` |
-| `keep_last`: `n < 0` | `ValueError` |
-| `token_budget`: `max_tokens <= 0` | `ValueError` |
-| `selective_history`: missing `budget` or `budget < 0` | `ValueError` |
-| `selective_history`: missing `selector` | `ValueError` |
-| async `generate` called from within a running event loop | `RuntimeError` |
+| An element is neither a provider dictionary nor a `Message` | `TypeError` |
+| A provider item has an unsupported or malformed role/type | `ValueError` |
+| A Responses/Gemini item contains an unsupported content part or step type | `ValueError` |
+| A tool result lacks its call identifier, or a tool call lacks required fields | `ValueError` |
+| `messages` mixes provider dictionaries and `Message` objects | `TypeError` |
+| Provider formats are mixed in one input list | `ValueError` or provider validation error |
+| Unknown `strategy` or a strategy-specific invalid parameter | `ValueError` |
+| Both `strategy` and `strategies` are specified, or categories are duplicated | `ValueError` |
+| Unknown `target_format` or `input_format` | `ValueError` |
+| An async `generate` callback is passed to `migrate()` inside a running event loop | `RuntimeError`; use `await async_migrate(...)` |
 
 ## Adding a New Strategy
 
-1. Create a new module in `src/llmigrate/strategies/` with:
-   - A `transform(messages: list[Message], **params) -> MigrationResult` function for standalone use.
-   - A category-specific function: `select()` for selection, `compress()` for transformation, or `validate()` for validation.
-2. If the strategy can drop or rewrite content, call `pinning.split_pinned()` at the top of `transform()` and never touch the pinned half. The pipeline handles pinning centrally for the category-specific functions.
-3. Register it in `strategies/__init__.py`: add to `STRATEGY_REGISTRY`, `STRATEGY_CATEGORIES`, and the appropriate category registry (`SELECT_REGISTRY`, `COMPRESS_REGISTRY`, or `VALIDATE_REGISTRY`).
+1. Create a module in `src/llmigrate/strategies/` with a `transform(messages, **params) -> MigrationResult` function and the category-specific `select()`, `compress()`, or `validate()` function.
+2. For transformations that can drop or rewrite content, use `pinning.split_pinned()` at the start of standalone `transform()`. The pipeline handles pinning centrally.
+3. Register the strategy in `strategies/__init__.py`: `STRATEGY_REGISTRY`, `STRATEGY_CATEGORIES`, and its category registry (`SELECT_REGISTRY`, `COMPRESS_REGISTRY`, or `VALIDATE_REGISTRY`).
 4. Add a `Strategy` enum value in `types.py`.
-5. Add tests, including a `TIGHT_PARAMS` entry in `tests/test_pinning.py` so the registry-wide invariant tests cover it.
-
+5. Add tests, including a `TIGHT_PARAMS` entry in `tests/test_pinning.py` so registry-wide invariant tests cover it.

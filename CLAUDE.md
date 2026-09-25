@@ -7,10 +7,10 @@
 ### Design Philosophy
 
 - **Messages in, messages out.** The core operation transforms a conversation history using a specified strategy.
-- **Single entry point.** `llmigrate.migrate()` is the primary API. Strategy selection is a parameter, not a function choice.
+- **Paired entry points.** `llmigrate.migrate()` is for synchronous callers and `llmigrate.async_migrate()` is for async runtimes. Strategy selection is a parameter, not a function choice.
 - **Composable strategies.** Strategies are categorized into three concerns — selection, transformation, and validation — and can be freely composed. The user declares *what* they want; the library imposes the correct execution order.
 - **Provider-agnostic.** Works with any LLM provider. Model-assisted strategies accept a generic `generate` callable rather than depending on any SDK. OpenAI-compatible self-hosted servers (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat mode, etc.) work out of the box, since they speak the same wire format as OpenAI.
-- **Canonical internal representation.** The library defines its own `Message` type for internal processing. Adapters convert to/from provider-native formats (OpenAI, Anthropic). Users can pass OpenAI- or Anthropic-format dicts directly and the library auto-detects the format.
+- **Canonical internal representation.** The library defines its own `Message` type for internal processing. Adapters convert OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions histories to and from that representation. Users can pass provider dictionaries directly and the library auto-detects supported formats.
 - **Protected content is a framework concern, not a per-strategy one.** No strategy — truncation, summarization, or selection — may drop or dilute the system prompt or the first user message (e.g. a task description). This is enforced centrally, not left to each strategy to remember.
 - **Zero required dependencies.** Core functionality has no external dependencies beyond the Python standard library. `tiktoken` and `openai` are optional extras.
 
@@ -52,14 +52,19 @@ src/llmigrate/
   adapters/               # Format converters
     __init__.py
     openai.py               # OpenAI message format <-> canonical
+    openai_responses.py     # OpenAI Responses items <-> canonical
     anthropic.py            # Anthropic message format <-> canonical
+    gemini_interactions.py  # Gemini Interactions steps <-> canonical
     detect.py               # Auto-detect input format
 tests/
   test_transfer.py         # Tests for migrate() and single-strategy use
   test_composition.py      # Tests for the composable pipeline (strategies= parameter)
   test_pinning.py          # Registry-wide invariants: protected content, role alternation
   test_selective_history.py
-  test_adapters.py         # Format adapter tests (OpenAI, Anthropic, auto-detect)
+  test_adapters.py         # OpenAI/Anthropic adapters and auto-detection
+  test_openai_responses.py # OpenAI Responses adapter tests
+  test_gemini_interactions_adapters.py # Gemini Interactions adapter tests
+  test_async_migrate.py   # Async migration and callback tests
   test_generators.py       # OpenAI-compatible generate() builders (mocked client)
 ```
 
@@ -69,22 +74,23 @@ tests/
 
 Single entry point for all migrations.
 
-- `messages`: `list[dict]` (OpenAI or Anthropic format, auto-detected) or `list[Message]` (canonical)
+- `messages`: `list[dict]` (one supported provider format, auto-detected) or `list[Message]` (canonical)
 - `strategy`: string name for a single strategy — `"raw"`, `"keep_last"`, `"token_budget"`, `"summarize"`, `"structured_state"`, `"audit"`, `"selective_history"`. Sugar for `strategies=["X"]`.
 - `strategies`: list of strategy names to compose. At most one from each category (selection, transformation, validation). User can pass them in any order; the library sorts internally.
-- `generate`: `Callable[[list[dict]], str]` — required for `summarize`/`structured_state` when no `summarizer` is given. May be sync or async — async callables are auto-detected and awaited.
+- `generate`: `Callable[[list[dict]], str]` — required for `summarize`/`structured_state` when no `summarizer` is given. `migrate()` supports sync callbacks and async callbacks outside a running event loop; `async_migrate()` is the native async entry point.
 - `generate_kwargs`: dict forwarded to `generate` on every call (e.g. `{"temperature": 0.2}`), kept separate from strategy params so the two namespaces never collide.
 - `source_model` / `target_model`: optional model names. Recorded in `result.metadata`; `token_budget`/`selective_history` use `target_model` to size a default token budget from a built-in context-window table (see `models.py`); `audit` uses `source_model` to customize its instruction.
-- `target_format`: `"openai"` or `"anthropic"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed).
+- `input_format`: `"openai"`, `"openai_responses"`, `"anthropic"`, `"gemini_interactions"`, or `"canonical"`.
+- `target_format`: `"openai"`, `"openai_responses"`, `"anthropic"`, or `"gemini_interactions"`. Controls the wire format of the output messages. When omitted, defaults to the detected format of the input (or `"openai"` if canonical `Message` objects are passed).
 - `enforce_alternation`: default `True`. Merges consecutive same-role messages in the output (needed for providers like Anthropic that reject non-alternating turns). Skipped for `raw`, whose contract is "unchanged".
 - `**params`: strategy-specific parameters (see below). All strategies also accept `pin_first_user: bool = True` (see Protected Content below).
 
 Returns a `MigrationResult` containing:
-- `messages`: `list[dict]` — the transformed conversation in wire format, ready for the target provider's API. For OpenAI format, system messages are included in the list. For Anthropic format, system messages are extracted into `system`.
+- `messages`: `list[dict]` — the transformed conversation in wire format, ready for the target provider's API. OpenAI Chat Completions includes system messages in the list; Anthropic, OpenAI Responses, and Gemini Interactions return them in `system`.
 - `strategies`: list of `Strategy` enums that were applied
 - `metadata`: dict with transformation details (original_count, strategy-specific info). When using `strategies=`, metadata from each step is namespaced under `"selection"`, `"transformation"`, and `"validation"` keys. When using `strategy=`, metadata is flat.
-- `format`: the wire format of the output (`"openai"` or `"anthropic"`)
-- `system`: `str | None` — the system prompt content (populated for Anthropic format, `None` for OpenAI format)
+- `format`: the wire format of the output (`"openai"`, `"openai_responses"`, `"anthropic"`, or `"gemini_interactions"`)
+- `system`: `str | None` — the top-level system instruction where the target format supports it
 
 ### Strategy Categories
 
@@ -151,13 +157,13 @@ migrate(messages, strategies=["audit", "summarize", "keep_last"], n=3, generate=
 - **Internal canonical representation** rather than assuming any single provider format. `Message` is a simple dataclass with role, content, and a metadata dict for tool calls and other provider-specific fields. Adapters handle format conversion at the boundary.
 - **Strategy registry** (`STRATEGY_REGISTRY` in `strategies/__init__.py`) maps string names to transform functions. Separate `SELECT_REGISTRY`, `COMPRESS_REGISTRY`, and `VALIDATE_REGISTRY` map strategy names to their category-specific functions for pipeline use. `STRATEGY_CATEGORIES` maps each strategy name to its `StrategyCategory`.
 - **Each strategy is a module** with a `transform(messages, **params) -> MigrationResult` function for standalone use, plus a category-specific function (`select()`, `compress()`, or `validate()`) for pipeline composition. No class hierarchy — just functions. Pluggable components (`Selector`, `Summarizer`) are passed in as **parameter values**, not strategy classes.
-- **Auto-detection** of input format in `adapters/detect.py`, covering OpenAI dicts, Anthropic dicts (detected via content-block lists), and canonical Messages.
+- **Auto-detection** of input format in `adapters/detect.py`, covering OpenAI Chat Completions, OpenAI Responses items, Anthropic dicts, Gemini Interactions steps, and canonical Messages.
 - **Protected content is centralized** (`pinning.py`): every strategy that can drop or rewrite content calls `split_pinned()` (in standalone mode) or has pinning done centrally by the pipeline. Pinned = all `SYSTEM` messages + the first `USER` message (by default) + anything explicitly tagged `metadata["pinned"] = True`. Enforcement is verified by a registry-wide parametrized test (`tests/test_pinning.py::test_preserves_task_marker`).
 - **Role-alternation is enforced centrally** (`alternation.py`), inside `migrate()` itself, for every strategy except `raw`. Many providers (Anthropic) reject consecutive same-role messages, which pinning can incidentally produce (e.g. a pinned first-user task immediately followed by a synthetic summary, both `USER`). The generic merge (`enforce_alternation`) fixes this.
 - **Turn-boundary grouping** (`turns.py`): `group_into_turns()` groups a `USER` message with everything up to the next `USER` message, so selection strategies (`keep_last`, `token_budget`) operate on whole turns and never split a turn pair or orphan a `TOOL_RESULT` from its `TOOL_CALL`. `selective_history` is the exception — see below.
-- **Model-assisted strategies** (`summarize`, `structured_state`) accept a `generate` callable with signature `Callable[[list[dict]], str]`, sync or async (auto-detected via `_util.call_generate`). `summarize` also accepts a `Summarizer` protocol object (or a bare `generate`, auto-wrapped via `as_summarizer`) for cost/latency accounting. `generators.py` provides ready-made `generate` builders for OpenAI-compatible endpoints — optional, requires `pip install llmigrate[openai]`.
+- **Model-assisted strategies** (`summarize`, `structured_state`) accept a `generate` callable with signature `Callable[[list[dict]], str]`. `migrate()` is for sync callers; `async_migrate()` awaits async callbacks and runs sync callbacks off the event loop. `summarize` also accepts `Summarizer` or `AsyncSummarizer` implementations for accounting. `generators.py` provides ready-made `generate` builders for OpenAI-compatible endpoints — optional, requires `pip install llmigrate[openai]`.
 - **Cost/latency accounting** (`summarizers.py`): `summarize` records wall-clock latency and estimated token usage for every model call. A bare `generate` callable is auto-wrapped in `GenerateSummarizer`, which can only report latency/token estimates; implement the `Summarizer` protocol directly against your provider client for real cost/model reporting.
-- **Wire-format output**: `migrate()` always returns messages as provider-native dicts (OpenAI or Anthropic format), never canonical `Message` objects. The `target_format` parameter controls the output format, defaulting to the detected input format (or `"openai"` when canonical `Message` objects are passed). The canonical `Message` type is purely an internal implementation detail.
+- **Wire-format output**: `migrate()` and `async_migrate()` return provider-native items, never canonical `Message` objects. The `target_format` parameter controls the output format, defaulting to the detected input format (or `"openai"` when canonical `Message` objects are passed). The canonical `Message` type is internal.
 - **Metadata on synthetic messages**: messages created by the library (summaries, structured state extractions, audit instructions) carry `llmigrate["llmigrate_synthetic"] = True` in the wire-format dict. The `"llmigrate"` key namespaces library metadata away from provider-specific fields; extra keys are silently ignored by all major providers.
 
 ## Protected Content (framework-level)
@@ -176,7 +182,7 @@ Chooses a **verbatim** subset of events (no rewriting) that fits a token `budget
 - `RelevanceSelector(embed=..., query=...)` — cosine similarity against a pluggable embedding function; llmigrate binds to no specific embedding provider.
 - `always_keep: set[str]` forces retention of matching categories (mandatory, most-recent-first if they alone exceed the budget).
 - Output is re-sorted into original chronological order; metadata includes `selected_event_ids`/`dropped_event_ids` (0-indexed positions in the input list for that call), `original_tokens`, `transferred_tokens`, `selector`, and per-candidate scores.
-- **Limitation**: operates at message granularity per its spec and does *not* guarantee `TOOL_CALL`/`TOOL_RESULT` pairing the way turn-based strategies do — put both categories in `always_keep` if that matters.
+- **Tool-event safety**: `selective_history` groups messages connected by tool-call IDs, then selects each call/result group atomically. The selector scores candidate messages and the highest score in a group ranks that group; `always_keep` matching any member forces the complete group, subject to budget.
 
 ## Testing
 
@@ -190,7 +196,7 @@ Covers, across `tests/*.py`:
 - `state_data` metadata parsing (both the `generate` and heuristic paths)
 - `selective_history` (both selectors, budget enforcement, chronological output, `always_keep`)
 - Composition: selection+transformation (skips transformation when nothing dropped), selection+validation, all three categories, custom `Summarizer` cost reporting, summary truncation
-- OpenAI and Anthropic adapter roundtrips (incl. tool calls/results), format auto-detection
+- OpenAI, Anthropic, OpenAI Responses, and Gemini Interactions adapter roundtrips (including supported tool calls/results), format auto-detection
 - `generators.py`'s OpenAI-compatible `generate` builders, via an injected fake client (no real `openai` package or network access required)
 
 All tests run locally with no external services.

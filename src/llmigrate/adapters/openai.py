@@ -46,6 +46,18 @@ _PROVIDER_META_KEYS = frozenset(
         "openai_legacy_function",
         "anthropic_tool_calls_snapshot",
         "anthropic_tool_results_snapshot",
+        "responses_item",
+        "responses_item_id",
+        "responses_status",
+        "responses_text",
+        "responses_output",
+        "responses_call_snapshot",
+        "openai_responses_extra",
+        "openai_responses_role",
+        "gemini_interactions_step",
+        "gemini_interactions_text",
+        "gemini_interactions_extra",
+        "gemini_interactions_call_snapshot",
     }
 )
 

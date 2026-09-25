@@ -5,7 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from llmigrate.adapters.anthropic import from_anthropic
+from llmigrate.adapters.gemini_interactions import from_gemini_interactions
 from llmigrate.adapters.openai import from_openai
+from llmigrate.adapters.openai_responses import from_openai_responses
 from llmigrate.types import Message
 
 _ANTHROPIC_BLOCK_TYPES = {
@@ -34,8 +36,20 @@ _OPENAI_UNIQUE_BLOCK_TYPES = {
 }
 
 OPENAI = "openai"
+OPENAI_RESPONSES = "openai_responses"
 ANTHROPIC = "anthropic"
+GEMINI_INTERACTIONS = "gemini_interactions"
 CANONICAL = "canonical"
+
+_INPUT_FORMATS = {
+    OPENAI,
+    OPENAI_RESPONSES,
+    ANTHROPIC,
+    GEMINI_INTERACTIONS,
+    CANONICAL,
+}
+_GEMINI_STEP_TYPES = {"user_input", "model_output", "function_result"}
+_RESPONSES_ITEM_TYPES = {"message", "function_call", "function_call_output"}
 
 
 def _looks_like_anthropic(messages: list[dict[str, Any]]) -> bool:
@@ -65,7 +79,7 @@ def _looks_like_anthropic(messages: list[dict[str, Any]]) -> bool:
 def detect_format(messages: list[dict[str, Any]] | list[Message]) -> str:
     """Detect the format of the input messages.
 
-    Returns ``"openai"``, ``"anthropic"``, or ``"canonical"``.
+    Returns a supported provider format or ``"canonical"``.
     """
     if not messages:
         return OPENAI
@@ -73,6 +87,18 @@ def detect_format(messages: list[dict[str, Any]] | list[Message]) -> str:
     if isinstance(first, Message):
         return CANONICAL
     if isinstance(first, dict):
+        item_types = {item.get("type") for item in messages if isinstance(item, dict)}
+        if item_types & _GEMINI_STEP_TYPES:
+            return GEMINI_INTERACTIONS
+        if "function_call" in item_types:
+            function_calls = [
+                item for item in messages
+                if isinstance(item, dict) and item.get("type") == "function_call"
+            ]
+            if any("id" in item and "call_id" not in item for item in function_calls):
+                return GEMINI_INTERACTIONS
+        if item_types & _RESPONSES_ITEM_TYPES:
+            return OPENAI_RESPONSES
         if _looks_like_anthropic(messages):  # type: ignore[arg-type]
             return ANTHROPIC
         return OPENAI
@@ -90,10 +116,10 @@ def auto_convert(
     - list[dict] with string content (OpenAI format, the most common,
       including OpenAI-compatible endpoints like vLLM): from_openai
     """
-    if input_format not in {None, OPENAI, ANTHROPIC, CANONICAL}:
+    if input_format not in {None, *_INPUT_FORMATS}:
         raise ValueError(
-            f"Unknown input_format: {input_format!r}. Must be 'openai', 'anthropic', "
-            "or 'canonical'."
+            f"Unknown input_format: {input_format!r}. Must be one of "
+            f"{', '.join(sorted(_INPUT_FORMATS))}."
         )
 
     if not messages:
@@ -114,6 +140,10 @@ def auto_convert(
         resolved_format = input_format or detect_format(messages)
         if resolved_format == ANTHROPIC:
             return from_anthropic(messages)  # type: ignore[arg-type]
+        if resolved_format == OPENAI_RESPONSES:
+            return from_openai_responses(messages)  # type: ignore[arg-type]
+        if resolved_format == GEMINI_INTERACTIONS:
+            return from_gemini_interactions(messages)  # type: ignore[arg-type]
         return from_openai(messages)  # type: ignore[arg-type]
 
     raise TypeError(

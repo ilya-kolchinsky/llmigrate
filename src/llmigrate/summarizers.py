@@ -5,12 +5,14 @@ model-assisted prefix compression.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
-from llmigrate._util import call_generate
+from llmigrate._util import call_generate, call_generate_async
 from llmigrate.tokens import estimate_tokens
 
 
@@ -31,6 +33,10 @@ class SummarizerResult:
 
 class Summarizer(Protocol):
     def summarize(self, messages: list[dict[str, Any]]) -> SummarizerResult: ...
+
+
+class AsyncSummarizer(Protocol):
+    async def summarize(self, messages: list[dict[str, Any]]) -> SummarizerResult: ...
 
 
 class GenerateSummarizer:
@@ -62,6 +68,41 @@ class GenerateSummarizer:
     def __repr__(self) -> str:
         name = getattr(self.generate, "__name__", repr(self.generate))
         return f"GenerateSummarizer({name})"
+
+
+async def summarize_async(
+    summarizer: Any,
+    messages: list[dict[str, Any]],
+    *,
+    generate_kwargs: dict[str, Any] | None = None,
+) -> SummarizerResult:
+    """Run either a sync/async Summarizer or a sync/async generate callable."""
+    if summarizer is None:
+        raise ValueError("a 'summarizer' or 'generate' callable is required")
+    if hasattr(summarizer, "summarize"):
+        method = summarizer.summarize
+        if inspect.iscoroutinefunction(method) or inspect.iscoroutinefunction(
+            getattr(method, "__call__", None)
+        ):
+            result = await method(messages)
+        else:
+            result = await asyncio.to_thread(method, messages)
+            if inspect.isawaitable(result):
+                result = await result
+        if not isinstance(result, SummarizerResult):
+            raise TypeError("summarizer.summarize() must return SummarizerResult")
+        return result
+
+    input_tokens = sum(estimate_tokens(m.get("content") or "") for m in messages)
+    start = time.monotonic()
+    text = await call_generate_async(
+        summarizer, messages, **(generate_kwargs or {})
+    )
+    return SummarizerResult(
+        text=text,
+        latency_ms=(time.monotonic() - start) * 1000,
+        token_usage=TokenUsage(input_tokens=input_tokens, output_tokens=estimate_tokens(text)),
+    )
 
 
 def as_summarizer(
