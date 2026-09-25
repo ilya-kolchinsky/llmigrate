@@ -6,6 +6,7 @@ import pytest
 
 import llmigrate
 from llmigrate.selectors import PrioritySelector, RelevanceSelector
+from llmigrate.types import Role
 
 MESSAGES = [
     {"role": "system", "content": "You are a helpful assistant."},
@@ -100,3 +101,76 @@ class TestRelevanceSelector:
             MESSAGES, strategy="selective_history", budget=10_000, selector=selector
         )
         assert any("KeyError" in m["content"] for m in result.messages)
+
+
+def test_tool_call_and_matching_result_are_dropped_atomically_when_pair_does_not_fit():
+    class PreferCall:
+        def score(self, messages):
+            return [100.0 if message.role == Role.TOOL_CALL else 0.0 for message in messages]
+
+    messages = [
+        {"role": "user", "content": "Find the weather."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {"name": "weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_weather", "content": "Sunny."},
+        {"role": "assistant", "content": "The weather is sunny."},
+    ]
+
+    result = llmigrate.migrate(
+        messages,
+        strategy="selective_history",
+        budget=8,
+        selector=PreferCall(),
+        tokenizer=lambda _text: 0,
+    )
+
+    assert not any(message.get("tool_calls") for message in result.provider_messages)
+    assert not any(message.get("role") == "tool" for message in result.provider_messages)
+    assert any(message.get("content") == "The weather is sunny." for message in result.provider_messages)
+
+
+def test_selective_history_can_select_tool_call_and_result_as_one_event():
+    class PreferCall:
+        def score(self, messages):
+            return [100.0 if message.role == Role.TOOL_CALL else 0.0 for message in messages]
+
+    messages = [
+        {"role": "user", "content": "Find the weather."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {"name": "weather", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_weather", "content": "Sunny."},
+        {"role": "assistant", "content": "The weather is sunny."},
+    ]
+
+    result = llmigrate.migrate(
+        messages,
+        strategy="selective_history",
+        budget=12,
+        selector=PreferCall(),
+        tokenizer=lambda _text: 0,
+    )
+
+    assert any(message.get("tool_calls") for message in result.provider_messages)
+    assert any(message.get("role") == "tool" for message in result.provider_messages)
+    assert not any(
+        message.get("content") == "The weather is sunny."
+        for message in result.provider_messages
+    )

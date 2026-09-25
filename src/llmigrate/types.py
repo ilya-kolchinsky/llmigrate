@@ -86,8 +86,9 @@ class ValidationResult:
 class MigrationResult:
     """Result of a migrate operation.
 
-    Contains the transformed messages in wire format (OpenAI or Anthropic
-    dicts), ready to pass directly to the target provider's API.
+    Contains transformed messages as provider-native dictionaries. Depending
+    on ``format``, ``messages`` is ready for OpenAI Chat Completions, OpenAI
+    Responses, Anthropic Messages, or Gemini Interactions.
     """
 
     messages: list[Message] | list[dict[str, Any]]
@@ -108,10 +109,12 @@ class MigrationResult:
     def provider_messages(self) -> list[dict[str, Any]]:
         """Return wire-format messages without llmigrate's private metadata.
 
-        ``messages`` retains per-message llmigrate metadata for inspection and
+        ``messages`` retains per-item llmigrate metadata for inspection and
         backward compatibility. Provider request schemas generally do not
         accept that extension, so use this property when forwarding the result
-        directly to an API. Anthropic callers should also pass ``system``.
+        directly to an API. Pass ``system`` as Anthropic's ``system`` argument,
+        OpenAI Responses' ``instructions``, or Gemini Interactions'
+        ``system_instruction`` when applicable.
         """
         provider_messages: list[dict[str, Any]] = []
         for message in self.messages:

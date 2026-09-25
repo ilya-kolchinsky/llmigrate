@@ -80,13 +80,35 @@ def _media_markers(value: Any) -> list[str]:
 
 
 def call_generate(generate: Callable[..., Any], prompt: Any, **kwargs: Any) -> str:
-    """Call a `generate` callable, auto-detecting and awaiting async callables."""
-    if inspect.iscoroutinefunction(generate):
-        try:
-            return cast(str, asyncio.run(generate(prompt, **kwargs)))
-        except RuntimeError as e:
-            raise RuntimeError(
-                "generate is async but migrate() was called from within a "
-                "running event loop; call migrate() from synchronous code."
-            ) from e
-    return cast(str, generate(prompt, **kwargs))
+    """Call a sync or async callable from synchronous code."""
+    result = generate(prompt, **kwargs)
+    if not inspect.isawaitable(result):
+        return cast(str, result)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        async def await_result() -> Any:
+            return await result
+
+        return cast(str, asyncio.run(await_result()))
+    if inspect.iscoroutine(result):
+        result.close()
+    raise RuntimeError(
+        "generate returned an awaitable but migrate() was called from within a "
+        "running event loop; use async_migrate() instead."
+    )
+
+
+async def call_generate_async(
+    generate: Callable[..., Any], prompt: Any, **kwargs: Any
+) -> str:
+    """Call sync or async generation without blocking the running event loop."""
+    if inspect.iscoroutinefunction(generate) or inspect.iscoroutinefunction(
+        getattr(generate, "__call__", None)
+    ):
+        result = generate(prompt, **kwargs)
+    else:
+        result = await asyncio.to_thread(generate, prompt, **kwargs)
+    if inspect.isawaitable(result):
+        result = await result
+    return cast(str, result)
