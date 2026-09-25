@@ -544,7 +544,7 @@ default_tokenizer(target_model: str | None = None) -> Callable[[str], int]
 estimate_tokens(text: str, tokenizer: Callable[[str], int] | None = None) -> int
 ```
 
-`default_tokenizer()` returns a `tiktoken`-backed counter if the optional `tiktoken` package is installed (using `tiktoken.encoding_for_model(target_model)` when that model name is recognized, else `cl100k_base`), otherwise a character heuristic (`max(1, len(text) // 4)`, i.e. ~4 characters per token). `estimate_tokens()` applies a given tokenizer (or the heuristic, if none given) to a string. Budget strategies apply that counter to message text and tool payloads, with a small framing allowance and markers for media blocks. Image/audio/document token costs and provider-specific message/tool schemas are not knowable from text alone, so these remain estimates; leave additional room or supply a provider-aware custom tokenizer where needed. Any strategy accepting a `tokenizer` parameter takes a plain `Callable[[str], int]`, so a custom tokenizer (e.g. a provider-specific one) can always be substituted.
+`default_tokenizer()` returns a `tiktoken`-backed counter if `tiktoken` is installed; the [README installation instructions](../README.md#install) show how to add that optional extra. It uses `tiktoken.encoding_for_model(target_model)` when the model is recognized, else `cl100k_base`. If `tiktoken` is unavailable, it falls back to a character heuristic (`max(1, len(text) // 4)`, roughly four characters per token). `estimate_tokens()` applies a given tokenizer or the heuristic. Budget strategies apply that counter to message text and tool payloads, with a small framing allowance and markers for media blocks. Image, audio, and document token costs and provider-specific schemas cannot be determined from text alone, so counts remain estimates; leave extra room or supply a provider-aware custom tokenizer. Any strategy accepting `tokenizer` takes a plain `Callable[[str], int]`, so a custom tokenizer can always be used.
 
 ## Model Context Windows
 
@@ -583,7 +583,7 @@ Inside an async agent or server, use `await llmigrate.async_migrate(...)` with a
 
 ### `generators.py` — OpenAI-compatible builders
 
-`src/llmigrate/generators.py` provides ready-made `generate` callables for OpenAI itself and any OpenAI-compatible Chat Completions endpoint (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat mode, Together, Groq, Fireworks, ...). Requires `pip install llmigrate[openai]` unless you supply your own `client`.
+`src/llmigrate/generators.py` provides ready-made `generate` callables for OpenAI itself and any OpenAI-compatible Chat Completions endpoint (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat mode, Together, Groq, Fireworks, ...). The helper requires the optional `openai` package unless you supply your own `client`. Before a PyPI release, install it with `python -m pip install -e ".[openai]"` from the repository checkout; see the [installation instructions](../README.md#install).
 
 ```python
 openai_compatible_generate(
