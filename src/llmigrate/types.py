@@ -86,9 +86,9 @@ class ValidationResult:
 class MigrationResult:
     """Result of a migrate operation.
 
-    Contains transformed messages as provider-native dictionaries. Depending
-    on ``format``, ``messages`` is ready for OpenAI Chat Completions, OpenAI
-    Responses, Anthropic Messages, or Gemini Interactions.
+    ``messages`` contains transformed provider-format items with llmigrate's
+    metadata sidecar. Use ``provider_messages`` when sending them to a provider
+    API; pass ``system`` separately for formats with a top-level instruction.
     """
 
     messages: list[Message] | list[dict[str, Any]]

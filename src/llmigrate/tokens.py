@@ -16,8 +16,9 @@ def _char_heuristic(text: str) -> int:
 def default_tokenizer(target_model: str | None = None) -> Callable[[str], int]:
     """Best tokenizer available: tiktoken if installed, else a char heuristic.
 
-    tiktoken is an optional dependency (`pip install llmigrate[tiktoken]`); core
-    llmigrate has no required dependencies.
+    tiktoken is optional; from a source checkout, install it with
+    `python -m pip install -e ".[tiktoken]"`. Core llmigrate has no required
+    dependencies.
     """
     try:
         import tiktoken

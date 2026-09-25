@@ -96,5 +96,5 @@ def test_missing_openai_package_raises_helpful_error(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-    with pytest.raises(ImportError, match=r"pip install llmigrate\[openai\]"):
+    with pytest.raises(ImportError, match=r"python -m pip install openai"):
         openai_compatible_generate(base_url="http://localhost:8000/v1", model="my-model")

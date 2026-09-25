@@ -3,8 +3,9 @@ itself, and self-hosted/alternative servers that speak the same Chat
 Completions wire format (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat
 mode, Together, Groq, Fireworks, ...).
 
-Requires the optional `openai` package unless you pass your own `client`:
-    pip install llmigrate[openai]
+Requires the optional `openai` package unless you pass your own `client`.
+From a source checkout, install it with:
+    python -m pip install -e ".[openai]"
 """
 
 from __future__ import annotations
@@ -31,7 +32,8 @@ def openai_compatible_generate(
         except ImportError as e:
             raise ImportError(
                 "openai_compatible_generate requires the 'openai' package: "
-                "pip install llmigrate[openai]"
+                "run `python -m pip install openai`, or from the repository checkout run "
+                '`python -m pip install -e ".[openai]"`'
             ) from e
         client = OpenAI(base_url=base_url, api_key=api_key or "not-needed")
 
@@ -59,7 +61,8 @@ def async_openai_compatible_generate(
         except ImportError as e:
             raise ImportError(
                 "async_openai_compatible_generate requires the 'openai' package: "
-                "pip install llmigrate[openai]"
+                "run `python -m pip install openai`, or from the repository checkout run "
+                '`python -m pip install -e ".[openai]"`'
             ) from e
         client = AsyncOpenAI(base_url=base_url, api_key=api_key or "not-needed")
 
