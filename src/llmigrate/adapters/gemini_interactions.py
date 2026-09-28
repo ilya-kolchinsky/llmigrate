@@ -98,7 +98,7 @@ def from_gemini_interactions(steps: list[dict[str, Any]]) -> list[Message]:
         step_type = step.get("type")
         if step_type == "user_input":
             content = _text(step.get("content", []), location="user_input")
-            metadata = {
+            metadata: dict[str, Any] = {
                 "gemini_interactions_step": deepcopy(step),
                 "gemini_interactions_text": content,
             }
@@ -133,7 +133,9 @@ def from_gemini_interactions(steps: list[dict[str, Any]]) -> list[Message]:
             if not isinstance(name, str) or not name:
                 raise ValueError("Gemini Interactions function_call steps require 'name'")
             arguments_text = (
-                arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, ensure_ascii=False)
             )
             metadata = {
                 "tool_calls": [
@@ -239,18 +241,20 @@ def to_gemini_interactions(
                     if isinstance(arguments, str)
                     else json.dumps(arguments, ensure_ascii=False)
                 )
-                unchanged = (
+                if (
                     isinstance(original, dict)
                     and isinstance(snapshot, dict)
                     and rendered["id"] == snapshot.get("id")
                     and rendered["name"] == snapshot.get("name")
                     and arguments_text == snapshot.get("arguments")
-                )
-                step = deepcopy(original) if unchanged else rendered
+                ):
+                    call_step = deepcopy(original)
+                else:
+                    call_step = rendered
                 _add_llmigrate_metadata(
-                    step, message.metadata, include_metadata=include_metadata
+                    call_step, message.metadata, include_metadata=include_metadata
                 )
-                steps.append(step)
+                steps.append(call_step)
             continue
         if message.role == Role.TOOL_RESULT:
             original = message.metadata.get("gemini_interactions_step")
@@ -280,19 +284,19 @@ def to_gemini_interactions(
                         and message.content != message.metadata.get("gemini_interactions_text")
                     ):
                         output = message.content
-                    step: dict[str, Any] = {
+                    result_step: dict[str, Any] = {
                         "type": "function_result",
                         "call_id": call_id,
                         "result": output if isinstance(output, str) else json.dumps(output),
                     }
                     if isinstance(tool_result.get("name"), str):
-                        step["name"] = tool_result["name"]
+                        result_step["name"] = tool_result["name"]
                     if isinstance(tool_result.get("is_error"), bool):
-                        step["is_error"] = tool_result["is_error"]
+                        result_step["is_error"] = tool_result["is_error"]
                     _add_llmigrate_metadata(
-                        step, message.metadata, include_metadata=include_metadata
+                        result_step, message.metadata, include_metadata=include_metadata
                     )
-                    steps.append(step)
+                    steps.append(result_step)
             else:
                 call_id = message.metadata.get("tool_call_id")
                 if not isinstance(call_id, str) or not call_id:

@@ -104,23 +104,25 @@ def from_openai_responses(items: list[dict[str, Any]]) -> list[Message]:
             if not isinstance(name, str) or not name:
                 raise ValueError("OpenAI Responses function_call items require 'name'")
             arguments_text = (
-                arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, ensure_ascii=False)
             )
-            metadata = {
-                        "tool_calls": [
-                            {
-                                "id": call_id,
-                                "type": "function",
-                                "function": {"name": name, "arguments": arguments_text},
-                            }
-                        ],
-                        "responses_item": deepcopy(item),
-                        "responses_call_snapshot": {
-                            "call_id": call_id,
-                            "name": name,
-                            "arguments": arguments_text,
-                        },
+            metadata: dict[str, Any] = {
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": arguments_text},
                     }
+                ],
+                "responses_item": deepcopy(item),
+                "responses_call_snapshot": {
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments_text,
+                },
+            }
             _read_llmigrate_metadata(item, metadata)
             result.append(Message(role=Role.TOOL_CALL, content="", metadata=metadata))
             continue
@@ -133,10 +135,10 @@ def from_openai_responses(items: list[dict[str, Any]]) -> list[Message]:
             if not isinstance(output, str):
                 raise ValueError("Text-only OpenAI Responses tool outputs must be strings")
             metadata = {
-                        "tool_call_id": call_id,
-                        "responses_item": deepcopy(item),
-                        "responses_output": output,
-                    }
+                "tool_call_id": call_id,
+                "responses_item": deepcopy(item),
+                "responses_output": output,
+            }
             _read_llmigrate_metadata(item, metadata)
             result.append(Message(role=Role.TOOL_RESULT, content=output, metadata=metadata))
             continue
@@ -156,7 +158,7 @@ def from_openai_responses(items: list[dict[str, Any]]) -> list[Message]:
             for key, value in item.items()
             if key not in {"type", "role", "content", "id", "status", "llmigrate"}
         }
-        metadata: dict[str, Any] = {
+        metadata = {
             "responses_item": deepcopy(item),
             "responses_text": content,
             "openai_responses_role": role_name,
@@ -210,14 +212,16 @@ def to_openai_responses(
                 rendered = _render_tool_call(call)
                 original = message.metadata.get("responses_item")
                 snapshot = message.metadata.get("responses_call_snapshot")
-                unchanged = (
+                if (
                     isinstance(original, dict)
                     and isinstance(snapshot, dict)
                     and rendered["call_id"] == snapshot.get("call_id")
                     and rendered["name"] == snapshot.get("name")
                     and rendered["arguments"] == snapshot.get("arguments")
-                )
-                item = deepcopy(original) if unchanged else rendered
+                ):
+                    item = deepcopy(original)
+                else:
+                    item = rendered
                 _add_llmigrate_metadata(item, message.metadata, include_metadata=include_metadata)
                 items.append(item)
             continue
@@ -243,21 +247,19 @@ def to_openai_responses(
                 if not isinstance(call_id, str) or not call_id:
                     raise ValueError("OpenAI Responses tool outputs require a call ID")
                 original = message.metadata.get("responses_item")
-                unchanged = (
+                if (
                     isinstance(original, dict)
                     and original.get("type") == "function_call_output"
                     and original.get("call_id") == call_id
                     and message.content == message.metadata.get("responses_output")
-                )
-                item = (
-                    deepcopy(original)
-                    if unchanged
-                    else {
+                ):
+                    item = deepcopy(original)
+                else:
+                    item = {
                         "type": "function_call_output",
                         "call_id": call_id,
                         "output": message.content,
                     }
-                )
                 _add_llmigrate_metadata(item, message.metadata, include_metadata=include_metadata)
                 items.append(item)
             continue
@@ -266,12 +268,11 @@ def to_openai_responses(
         if role_name not in _ROLE_MAP:
             raise ValueError(f"OpenAI Responses cannot represent role {role_name!r}")
         original = message.metadata.get("responses_item")
-        unchanged = (
+        if (
             isinstance(original, dict)
             and original.get("role") == role_name
             and message.content == message.metadata.get("responses_text")
-        )
-        if unchanged:
+        ):
             item = deepcopy(original)
         else:
             item = {

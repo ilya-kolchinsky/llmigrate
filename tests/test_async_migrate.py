@@ -54,7 +54,9 @@ async def test_async_migrate_supports_async_summarizer_protocol():
         summarizer=MyAsyncSummarizer(),
     )
 
-    assert any("Custom async summary." in message["content"] for message in result.provider_messages)
+    assert any(
+        "Custom async summary." in message["content"] for message in result.provider_messages
+    )
     assert result.metadata["model"] == "test-model"
     assert result.metadata["token_usage"].output_tokens == 4
 

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 from llmigrate._util import message_to_text
 from llmigrate.pinning import split_pinned
@@ -105,7 +106,9 @@ async def compress_async(dropped: list[Message], **params: Any) -> CompressionRe
         summarizer_repr = (
             repr(summarizer)
             if hasattr(summarizer, "summarize")
-            else repr(GenerateSummarizer(summarizer, generate_kwargs))
+            else repr(
+                GenerateSummarizer(cast(Callable[..., str], summarizer), generate_kwargs)
+            )
         )
         prompt = _build_summary_prompt(dropped)
         summarizer_result = await summarize_async(

@@ -4,6 +4,8 @@
 
 It offers synchronous and asynchronous APIs, several history-selection and compression strategies, and adapters for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions.
 
+[![CI](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml)
+
 ## Install
 
 llmigrate is not published on PyPI yet. Install the current source checkout with Python 3.10 or newer:
@@ -66,19 +68,34 @@ print(result.provider_messages)  # OpenAI Responses `input`
 print(result.system)             # OpenAI Responses `instructions`
 ```
 
-This example only transforms local data; it makes no model request. The [Getting Started guide](docs/GETTING-STARTED.md) shows how to choose a strategy, handle each provider's system prompt, and add an optional model callback.
+This example only transforms local data; it makes no model request. The [Getting Started guide](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/GETTING-STARTED.md) shows how to choose a strategy, handle each provider's system prompt, and add an optional model callback.
 
 ## What it handles
 
-llmigrate migrates **text conversations and structured tool-call/result records**. It does not convert image, audio, video, or document payloads. Some untouched OpenAI and Anthropic blocks can pass through in same-format raw migrations; that does not make them safe for content-changing strategies or cross-format conversion. Unsupported content is rejected where the adapter cannot represent it safely. See [supported data and conversion limits](docs/API-details.md#supported-data-and-conversion-limits).
+llmigrate migrates **text conversations and structured tool-call/result records**. It does not convert image, audio, video, or document payloads. Some untouched OpenAI and Anthropic blocks can pass through in same-format raw migrations; that does not make them safe for content-changing strategies or cross-format conversion. Unsupported content is rejected where the adapter cannot represent it safely. See [supported data and conversion limits](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API-details.md#supported-data-and-conversion-limits).
 
 The system prompt and first user message are protected by default. `selective_history` keeps linked tool calls and known results together. These features preserve transcript structure; they do not guarantee that a different model will interpret the history the same way.
 
 ## Documentation
 
-- [Getting Started](docs/GETTING-STARTED.md) — installation, first migration, provider integration, and common choices.
-- [API reference](docs/API.md) — entry points, strategies, parameters, and extension points.
-- [Format adapters and limitations](docs/API-details.md#format-adapters) — accepted input and output shapes.
+- [Getting Started](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/GETTING-STARTED.md) — installation, first migration, provider integration, and common choices.
+- [API reference](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API.md) — entry points, strategies, parameters, and extension points.
+- [Format adapters and limitations](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API-details.md#format-adapters) — accepted input and output shapes.
+
+## Development checks
+
+Install the `dev` extra from the repository checkout to get the test, lint, type-checking, and packaging tools. Then run these commands from the repository root:
+
+```sh
+python -m pip install -e ".[dev]"
+python -m pytest -q
+python -m ruff check src tests
+python -m mypy src/llmigrate
+python -m build
+python -m twine check dist/*
+```
+
+The CI workflow tests Python 3.10 through 3.14 and checks the built wheel and source distribution.
 
 ## License
 

@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (Python 3.10)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+          cache: pip
+      - name: Install project and development tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run tests
+        run: python -m pytest -q
+
+  quality:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install project and development tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run Ruff
+        run: python -m ruff check src tests
+      - name: Run mypy
+        run: python -m mypy src/llmigrate
+
+  packaging:
+    name: Build and install distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install packaging tools
+        run: python -m pip install --upgrade pip build twine
+      - name: Build wheel and source distribution
+        run: python -m build
+      - name: Validate distribution metadata and README
+        run: python -m twine check dist/*
+      - name: Install and smoke-test wheel without project dependencies
+        run: |
+          python -m pip install --no-deps dist/*.whl
+          python -I -c "import llmigrate; assert callable(llmigrate.migrate); print(llmigrate.__file__)"
+      - name: Install and smoke-test source distribution without project dependencies
+        run: |
+          python -m pip install --no-deps --force-reinstall dist/*.tar.gz
+          python -I -c "import llmigrate; assert callable(llmigrate.migrate); print(llmigrate.__file__)"
