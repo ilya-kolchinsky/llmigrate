@@ -81,6 +81,7 @@ The system prompt and first user message are protected by default. `selective_hi
 - [Getting Started](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/GETTING-STARTED.md) — installation, first migration, provider integration, and common choices.
 - [API reference](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API.md) — entry points, strategies, parameters, and extension points.
 - [Format adapters and limitations](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API-details.md#format-adapters) — accepted input and output shapes.
+- [Release guide](RELEASING.md) — maintainer steps for preparing a verified GitHub draft release.
 
 ## Development checks
 
@@ -95,7 +96,7 @@ python -m build
 python -m twine check dist/*
 ```
 
-The CI workflow tests Python 3.10 through 3.14 and checks the built wheel and source distribution.
+The CI workflow tests on Python 3.10, runs lint and type checks on Python 3.14, and builds and smoke-tests the wheel and source distribution on Python 3.14.
 
 ## License
 
