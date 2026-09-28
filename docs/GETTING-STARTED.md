@@ -2,18 +2,18 @@
 
 This guide gets a text conversation ready for a receiving model. The first example runs entirely locally: llmigrate does not need an API key and does not make model calls unless you provide a model callback or call a provider yourself.
 
-## 1. Install from source
+## 1. Install
 
-llmigrate requires Python 3.10 or newer. A PyPI release is not available yet, so clone the repository and install it in a virtual environment. Follow the Windows PowerShell or macOS/Linux commands in the [README installation section](../README.md#install). The commands use the environment's Python directly, so activation is optional.
+llmigrate requires Python 3.10 or newer. Install the latest release from PyPI in a virtual environment by following the Windows PowerShell or macOS/Linux commands in the [README installation section](../README.md#install). The commands use the environment's Python directly, so activation is optional.
 
-To add the optional OpenAI-compatible `generate` helper, install the `openai` extra from the repository directory:
+To add the optional OpenAI-compatible `generate` helper, install the `openai` extra from PyPI:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[openai]"
+.\.venv\Scripts\python.exe -m pip install "llmigrate[openai]"
 ```
 
 ```sh
-.venv/bin/python -m pip install -e '.[openai]'
+.venv/bin/python -m pip install 'llmigrate[openai]'
 ```
 
 ## 2. Run a first migration

@@ -5,39 +5,36 @@
 It offers synchronous and asynchronous APIs, several history-selection and compression strategies, and adapters for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions.
 
 [![CI](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/llmigrate)](https://pypi.org/project/llmigrate/)
 
 ## Install
 
-llmigrate is not published on PyPI yet. Install the current source checkout with Python 3.10 or newer:
+llmigrate requires Python 3.10 or newer. Install the latest release from PyPI in a virtual environment:
 
 ```powershell
-git clone https://github.com/ilya-kolchinsky/llmigrate.git
-cd llmigrate
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install llmigrate
 ```
 
 On macOS or Linux:
 
 ```sh
-git clone https://github.com/ilya-kolchinsky/llmigrate.git
-cd llmigrate
 python3 -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install llmigrate
 ```
 
 On Windows, replace `3.11` with the version you have installed if it is 3.10 or newer. On macOS/Linux, check `python3 --version` and use a `python3` command for version 3.10 or newer.
 
-The core library has no runtime dependencies and does not contact a model. Install optional extras from the repository directory:
+The core library has no runtime dependencies and does not contact a model. Optional extras add an OpenAI-compatible `generate` helper or improve token estimates for supported models:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[openai]"
-.\.venv\Scripts\python.exe -m pip install -e ".[tiktoken]"
+.\.venv\Scripts\python.exe -m pip install "llmigrate[openai]"
+.\.venv\Scripts\python.exe -m pip install "llmigrate[tiktoken]"
 ```
 
 ```sh
-.venv/bin/python -m pip install -e '.[openai]'
-.venv/bin/python -m pip install -e '.[tiktoken]'
+.venv/bin/python -m pip install 'llmigrate[openai]'
+.venv/bin/python -m pip install 'llmigrate[tiktoken]'
 ```
 
 `openai` adds a ready-made OpenAI-compatible `generate` helper. `tiktoken` improves token estimates for supported models. Both extras are optional.
@@ -81,7 +78,7 @@ The system prompt and first user message are protected by default. `selective_hi
 - [Getting Started](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/GETTING-STARTED.md) — installation, first migration, provider integration, and common choices.
 - [API reference](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API.md) — entry points, strategies, parameters, and extension points.
 - [Format adapters and limitations](https://github.com/ilya-kolchinsky/llmigrate/blob/main/docs/API-details.md#format-adapters) — accepted input and output shapes.
-- [Release guide](RELEASING.md) — maintainer steps for preparing a verified GitHub draft release.
+- [Release guide](RELEASING.md) — maintainer steps for preparing and publishing verified releases.
 
 ## Development checks
 
