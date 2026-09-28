@@ -23,6 +23,8 @@ pip install -e ".[dev,openai]"       # + OpenAI-compatible generate() builders
 pytest tests/ -v                     # run all tests (no external services needed)
 mypy src/llmigrate                   # strict type checking
 ruff check src/llmigrate tests       # linting
+python -m build                      # build wheel and source distribution
+python -m twine check dist/*          # validate package metadata and README
 ```
 
 ## Repository Layout
