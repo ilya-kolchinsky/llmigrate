@@ -396,7 +396,7 @@ def to_anthropic(
             d = {"role": "user", "content": _changed_content_blocks(msg)}
         else:
             role_str = _anthropic_role(msg.role)
-            content = _changed_content_blocks(msg)
+            content: str | list[dict[str, Any]] = _changed_content_blocks(msg)
             # Anthropic accepts either a string or a block list. Keep the
             # established string form for ordinary text messages when there
             # were no Anthropic blocks whose order or opaque payloads need
