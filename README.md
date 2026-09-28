@@ -1,43 +1,31 @@
 # llmigrate
 
-**Prepare a conversation for its next model.** llmigrate reshapes text chat history when you route work to another model, recover from a provider change, or hand a task from one agent to another.
-
-It offers synchronous and asynchronous APIs, several history-selection and compression strategies, and adapters for OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions.
-
 [![CI](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ilya-kolchinsky/llmigrate/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/llmigrate)](https://pypi.org/project/llmigrate/)
 
+## Why llmigrate?
+
+When you switch models mid-conversation, it can seem natural to send the receiving model the full transcript as-is. But the transcript labels previous replies only as `assistant`; it does not say which model wrote them. The receiving model may treat the previous model’s claims, mistakes, or commitments as its own earlier replies and build on them as if they were established facts. If the previous model is much weaker or belongs to a very different family, its replies can seriously mislead the receiving model or give it context far outside the kinds of assistant histories it usually sees—in other words, out of distribution.
+
+llmigrate makes the handoff an explicit step: choose what history to preserve, what to condense, and which provider format to send. It helps shape context for the receiving model, but cannot guarantee that model will interpret the migrated history correctly.
+
+## Migration techniques
+
+- Preserve the conversation as-is when only a provider format change is needed.
+- Keep recent complete turns, optionally within an estimated token budget.
+- Select relevant history while keeping linked tool calls and results together.
+- Replace older history with a generated summary or extract structured state such as goals, progress, observations, and next steps.
+- Ask the receiving model to check inherited assumptions before continuing. These techniques can be combined into a migration pipeline.
+
+**Formats:** OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions. OpenAI-compatible servers using the Chat Completions format are supported too.
+
 ## Install
 
-llmigrate requires Python 3.10 or newer. Install the latest release from PyPI in a virtual environment:
-
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install llmigrate
-```
-
-On macOS or Linux:
+Requires Python 3.10 or newer.
 
 ```sh
-python3 -m venv .venv
-.venv/bin/python -m pip install llmigrate
+pip install llmigrate
 ```
-
-On Windows, replace `3.11` with the version you have installed if it is 3.10 or newer. On macOS/Linux, check `python3 --version` and use a `python3` command for version 3.10 or newer.
-
-The core library has no runtime dependencies and does not contact a model. Optional extras add an OpenAI-compatible `generate` helper or improve token estimates for supported models:
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install "llmigrate[openai]"
-.\.venv\Scripts\python.exe -m pip install "llmigrate[tiktoken]"
-```
-
-```sh
-.venv/bin/python -m pip install 'llmigrate[openai]'
-.venv/bin/python -m pip install 'llmigrate[tiktoken]'
-```
-
-`openai` adds a ready-made OpenAI-compatible `generate` helper. `tiktoken` improves token estimates for supported models. Both extras are optional.
 
 ## Quick start
 
