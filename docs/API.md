@@ -583,7 +583,7 @@ Inside an async agent or server, use `await llmigrate.async_migrate(...)` with a
 
 ### `generators.py` — OpenAI-compatible builders
 
-`src/llmigrate/generators.py` provides ready-made `generate` callables for OpenAI itself and any OpenAI-compatible Chat Completions endpoint (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat mode, Together, Groq, Fireworks, ...). The helper requires the optional `openai` package unless you supply your own `client`. Before a PyPI release, install it with `python -m pip install -e ".[openai]"` from the repository checkout; see the [installation instructions](../README.md#install).
+`src/llmigrate/generators.py` provides ready-made `generate` callables for OpenAI itself and any OpenAI-compatible Chat Completions endpoint (vLLM, LocalAI, LM Studio, Ollama's OpenAI-compat mode, Together, Groq, Fireworks, ...). The helper requires the optional `openai` package unless you supply your own `client`. Install the extra from PyPI with `python -m pip install 'llmigrate[openai]'`; when developing from a checkout, use `python -m pip install -e ".[openai]"`. See the [installation instructions](../README.md#install).
 
 ```python
 openai_compatible_generate(

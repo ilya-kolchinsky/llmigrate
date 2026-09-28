@@ -17,9 +17,9 @@ Before the first upload:
 2. Create a GitHub Actions Trusted Publisher on PyPI for project `llmigrate`, repository owner `ilya-kolchinsky`, repository `llmigrate`, workflow file `publish.yml`, and GitHub Actions environment `pypi`.
 3. Create a GitHub Actions environment named `pypi` in the repository. No PyPI API token or GitHub secret is required.
 
-The current GitHub release `v0.1.0` was published before the PyPI workflow was added, so its release event will not trigger this workflow. After the workflow is merged to `main` and the publisher is configured, run `Publish to PyPI` manually from the Actions tab on `main`, providing `v0.1.0` as the tag. Future published GitHub releases trigger PyPI publishing automatically.
+The initial `v0.1.0` release predates this workflow and was published to PyPI by manually running `Publish to PyPI` from the Actions tab on `main` with tag `v0.1.0`. Future releases are published automatically after their GitHub draft is published.
 
-After publishing, verify the project page and install the release in a clean environment:
+After publishing, verify the project page and install the release in a clean environment. Replace the version below with the version being released:
 
 ```sh
 python -m pip install llmigrate==0.1.0
