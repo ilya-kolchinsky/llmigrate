@@ -1,0 +1,96 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published GitHub release tag to upload to PyPI (for example, v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  attestations: read
+
+jobs:
+  verify:
+    name: Verify GitHub release distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download and verify release distributions
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$RELEASE_TAG" || "$RELEASE_TAG" != v* ]]; then
+            echo "Expected a release tag beginning with 'v'." >&2
+            exit 1
+          fi
+
+          release_json="$(gh release view "$RELEASE_TAG" --json tagName,isDraft)"
+          if [[ "$(jq -r '.tagName' <<< "$release_json")" != "$RELEASE_TAG" || \
+                "$(jq -r '.isDraft' <<< "$release_json")" != "false" ]]; then
+            echo "The selected GitHub release is missing, mismatched, or still a draft." >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --dir dist \
+            --pattern '*.whl' \
+            --pattern '*.tar.gz' \
+            --pattern SHA256SUMS
+
+          (
+            cd dist
+            sha256sum --check SHA256SUMS
+          )
+
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          source_distributions=(dist/*.tar.gz)
+          if [[ ${#wheels[@]} -lt 1 || ${#source_distributions[@]} -lt 1 ]]; then
+            echo "The release must include at least one wheel and one source distribution." >&2
+            exit 1
+          fi
+
+          for artifact in "${wheels[@]}" "${source_distributions[@]}"; do
+            gh attestation verify "$artifact" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          done
+      - name: Upload verified distributions for publishing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pypi-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish distributions to PyPI
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/llmigrate/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pypi-distributions
+          path: dist
+      - name: Publish to PyPI with trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
