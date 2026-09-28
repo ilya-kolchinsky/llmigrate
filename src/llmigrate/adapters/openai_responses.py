@@ -104,7 +104,9 @@ def from_openai_responses(items: list[dict[str, Any]]) -> list[Message]:
             if not isinstance(name, str) or not name:
                 raise ValueError("OpenAI Responses function_call items require 'name'")
             arguments_text = (
-                arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, ensure_ascii=False)
             )
             metadata = {
                         "tool_calls": [

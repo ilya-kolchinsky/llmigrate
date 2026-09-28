@@ -15,7 +15,12 @@ from llmigrate.types import Role
 def test_interaction_text_and_function_history_round_trips():
     steps = [
         {"type": "user_input", "content": [{"type": "text", "text": "Check Paris."}]},
-        {"type": "function_call", "id": "call_1", "name": "weather", "arguments": {"city": "Paris"}},
+        {
+            "type": "function_call",
+            "id": "call_1",
+            "name": "weather",
+            "arguments": {"city": "Paris"},
+        },
         {
             "type": "function_result",
             "call_id": "call_1",

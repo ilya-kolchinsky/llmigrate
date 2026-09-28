@@ -194,7 +194,10 @@ async def async_migrate(
     if not resolved:
         transform_fn = STRATEGY_REGISTRY["raw"]
         result = cast(MigrationResult, transform_fn(canonical, **params))  # type: ignore[operator]
-    elif strategy is not None and STRATEGY_CATEGORIES.get(resolved[0]) == StrategyCategory.TRANSFORMATION:
+    elif (
+        strategy is not None
+        and STRATEGY_CATEGORIES.get(resolved[0]) == StrategyCategory.TRANSFORMATION
+    ):
         result = await _async_transform_single(canonical, resolved[0], params)
     elif strategy is not None:
         transform_fn = STRATEGY_REGISTRY[resolved[0]]

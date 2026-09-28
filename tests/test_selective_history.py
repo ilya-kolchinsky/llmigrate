@@ -135,7 +135,9 @@ def test_tool_call_and_matching_result_are_dropped_atomically_when_pair_does_not
 
     assert not any(message.get("tool_calls") for message in result.provider_messages)
     assert not any(message.get("role") == "tool" for message in result.provider_messages)
-    assert any(message.get("content") == "The weather is sunny." for message in result.provider_messages)
+    assert any(
+        message.get("content") == "The weather is sunny." for message in result.provider_messages
+    )
 
 
 def test_selective_history_can_select_tool_call_and_result_as_one_event():

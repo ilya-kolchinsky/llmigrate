@@ -11,8 +11,16 @@ from llmigrate.types import Message, Role
 
 def test_responses_text_and_tool_history_round_trips():
     items = [
-        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Find it."}]},
-        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Searching."}]},
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Find it."}],
+        },
+        {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "Searching."}],
+        },
         {
             "type": "function_call",
             "call_id": "call_1",

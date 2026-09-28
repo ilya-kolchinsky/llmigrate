@@ -133,7 +133,9 @@ def from_gemini_interactions(steps: list[dict[str, Any]]) -> list[Message]:
             if not isinstance(name, str) or not name:
                 raise ValueError("Gemini Interactions function_call steps require 'name'")
             arguments_text = (
-                arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)
+                arguments
+                if isinstance(arguments, str)
+                else json.dumps(arguments, ensure_ascii=False)
             )
             metadata = {
                 "tool_calls": [
