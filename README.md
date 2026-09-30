@@ -19,6 +19,24 @@ llmigrate makes the handoff an explicit step: choose what history to preserve, w
 
 **Formats:** OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Gemini Interactions. OpenAI-compatible servers using the Chat Completions format are supported too.
 
+## Does migration strategy matter?
+
+We ran 5,758 mid-conversation handoffs on [SWE-bench Verified](https://www.swebench.com) — real GitHub issues solved by autonomous coding agents — across three open-weight models (Qwen 3.5 9B, Qwen 3.6 27B, Devstral Small 2 24B). The results show that *how* you transfer context matters more than *how much* you transfer.
+
+**Cross-family handoffs hurt most with raw transfer.** When handing off between model families (Qwen → Devstral), sending the full conversation as-is was the worst-performing strategy at 41.1% task success. The source model's reasoning patterns appear to actively confuse the cross-family recipient. Strategies that restructure or selectively filter the history recovered up to 60% — a 19 percentage-point improvement over raw.
+
+<p align="center">
+  <img src="benchmarks/figures/cross_family_transfer.png" width="680" alt="Cross-family model handoff: raw transfer is the worst strategy at 41.1%, while selective_history (priority) reaches 60.0%">
+</p>
+
+**Less context, better outcomes.** The Pareto frontier runs through `selective_history` and `structured_state` — they sit in the upper left (less context, higher quality). Raw transfer sits in the lower right (maximum context, no quality gain). Structured strategies used 60–80% less context than raw while matching or exceeding its task success rate.
+
+<p align="center">
+  <img src="benchmarks/figures/context_vs_quality.png" width="680" alt="Context size vs. quality tradeoff: selective_history and structured_state achieve higher quality with less context than raw">
+</p>
+
+Full results, methodology, and additional figures are in the [benchmark report](benchmarks/BENCHMARKS.md).
+
 ## Install
 
 Requires Python 3.10 or newer.
